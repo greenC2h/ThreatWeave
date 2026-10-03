@@ -191,36 +191,48 @@ def extract_visualization(content: Any) -> dict[str, str] | None:
     return _find_visualization(content)
 
 
-def _find_sandbox_report(content: Any, depth: int = 0) -> dict[str, str] | None:
-    """从主会话消息中提取报告元数据，绝不向前端暴露沙箱路径。"""
+def _find_sandbox_deliverables(content: Any, depth: int = 0) -> list[dict[str, str]]:
+    """递归读取已登记交付件，绝不将沙箱路径暴露给前端。"""
     if depth > 5:
-        return None
+        return []
     content = _parse_json_content(content)
     if isinstance(content, list):
-        for item in content:
-            report = _find_sandbox_report(item, depth + 1)
-            if report:
-                return report
-        return None
+        return [
+            deliverable
+            for item in content
+            for deliverable in _find_sandbox_deliverables(item, depth + 1)
+        ]
     if not isinstance(content, dict):
-        return None
-    if content.get("type") == "sandbox_report":
-        report_id = str(content.get("report_id", ""))
-        if re.fullmatch(r"[0-9a-f]{32}", report_id):
-            return {
-                "report_id": report_id,
-                "label": str(content.get("label") or "下载威胁分析报告"),
-            }
-    for value in content.values():
-        report = _find_sandbox_report(value, depth + 1)
-        if report:
-            return report
-    return None
+        return []
+    if content.get("type") == "sandbox_deliverable":
+        artifact_id = str(content.get("artifact_id", ""))
+        mime_type = str(content.get("mime_type", ""))
+        filename = str(content.get("filename", ""))
+        if (
+            re.fullmatch(r"[0-9a-f]{32}", artifact_id)
+            and mime_type in {"text/markdown", "text/html", "application/json"}
+            and filename
+        ):
+            return [{
+                "artifact_id": artifact_id,
+                "mime_type": mime_type,
+                "filename": filename,
+                "label": str(content.get("label") or filename),
+            }]
+        return []
+    return [
+        deliverable
+        for value in content.values()
+        for deliverable in _find_sandbox_deliverables(value, depth + 1)
+    ]
 
 
-def extract_sandbox_report(content: Any) -> dict[str, str] | None:
-    """返回会话消息中的受控报告标识，供 API 组装下载入口。"""
-    return _find_sandbox_report(content)
+def extract_sandbox_deliverables(content: Any) -> list[dict[str, str]]:
+    """返回消息中的全部受控交付件标识，供 API 生成下载和预览 URL。"""
+    deduplicated: dict[str, dict[str, str]] = {}
+    for deliverable in _find_sandbox_deliverables(content):
+        deduplicated[deliverable["artifact_id"]] = deliverable
+    return list(deduplicated.values())
 
 
 def make_session_title(content: str, max_length: int = 30) -> str:

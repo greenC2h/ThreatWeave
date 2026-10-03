@@ -108,8 +108,8 @@ async def create_main_agent(
     common_tools = await load_common_tools()
 
     # 异步子 Agent 的图不嵌入主图。
-    # 这里只生成 start_async_task 等提交工具，主 Agent 调用后立即返回 task_id；
-    # 异步服务完成情报处理、实体关系抽取或威胁分析；终态轮询只将交付物登记到当前会话。
+    # 主 Agent 可提交、查询、列举和取消当前会话的异步任务；远端任务完成后，
+    # 前端轮询会将交付物登记到当前会话。
     async_subagents = get_async_subagent_specs(ASYNC_AGENT_PROTOCOL_URL)
     async_sandbox_tools = create_async_sandbox_tools(
         async_subagents,

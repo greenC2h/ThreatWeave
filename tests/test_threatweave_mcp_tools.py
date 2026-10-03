@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import unittest
 
-from mcp_server.tools.threatweave_tools import _normalize_extraction_records
+from mcp_server.tools.threatweave_tools import (
+    _normalize_extraction_records,
+    _split_document_content,
+    _validate_extraction_candidates,
+)
 
 
 class ExtractionRecordNormalizationTests(unittest.TestCase):
@@ -34,6 +38,50 @@ class ExtractionRecordNormalizationTests(unittest.TestCase):
     def test_rejects_non_object_collection(self) -> None:
         with self.assertRaises(ValueError):
             _normalize_extraction_records("not-a-record", "entities")
+
+    def test_splits_long_document_without_losing_content(self) -> None:
+        content = "first paragraph\nsecond paragraph\nthird paragraph"
+        chunks = _split_document_content(content, 20)
+        self.assertEqual("".join(chunks), content)
+        self.assertGreater(len(chunks), 1)
+
+    def test_validates_model_evidence_and_derives_internal_offsets(self) -> None:
+        result = _validate_extraction_candidates(
+            "The report cites CVE-2026-1234 exactly once.",
+            [{
+                "entity_type": "cve",
+                "canonical_value": "CVE-2026-1234",
+                "semantic_role": "research",
+                "evidence": "CVE-2026-1234",
+            }],
+            [],
+        )
+        evidence = result["entities"][0]["evidence"][0]
+        self.assertEqual(evidence["charStart"], 17)
+        self.assertEqual(evidence["charEnd"], 30)
+        self.assertEqual(result["rejected"], [])
+
+    def test_rejects_ambiguous_evidence(self) -> None:
+        result = _validate_extraction_candidates(
+            "CVE-2026-1234 and CVE-2026-1234", [{
+                "entity_type": "cve",
+                "canonical_value": "CVE-2026-1234",
+                "evidence": "CVE-2026-1234",
+            }], [],
+        )
+        self.assertEqual(result["entities"], [])
+        self.assertEqual(result["rejected"][0]["kind"], "entity")
+
+    def test_accepts_a_validator_returned_evidence_object(self) -> None:
+        result = _validate_extraction_candidates(
+            "CVE-2026-1234", [{
+                "entityType": "cve",
+                "canonicalValue": "CVE-2026-1234",
+                "evidence": [{"evidenceQuote": "CVE-2026-1234"}],
+            }], [],
+        )
+        self.assertEqual(result["entities"][0]["evidence"][0]["evidenceQuote"], "CVE-2026-1234")
+        self.assertEqual(result["rejected"], [])
 
 
 if __name__ == "__main__":

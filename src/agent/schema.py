@@ -109,9 +109,9 @@ class Message(BaseModel):
         None,
         description="工具结果中的可视化资源",
     )
-    report: Optional["ReportArtifact"] = Field(
-        None,
-        description="仅可通过受控下载接口读取的沙箱分析报告",
+    deliverables: List["DeliverableArtifact"] = Field(
+        default_factory=list,
+        description="当前用户可下载或预览的沙箱交付件",
     )
     # 以下字段只用于工具消息，使历史恢复后的展示与 SSE 过程一致。
     tool_name: Optional[str] = Field(None, description="工具名称")
@@ -138,12 +138,17 @@ class Visualization(BaseModel):
     download_src: Optional[str] = Field(None, description="HTML 图表下载链接")
 
 
-class ReportArtifact(BaseModel):
-    """表示仅保存在用户沙箱中的威胁分析报告下载入口。"""
+class DeliverableArtifact(BaseModel):
+    """表示仅能由所属用户下载或预览的沙箱交付件。"""
 
-    report_id: str = Field(..., description="报告元数据标识，不是沙箱文件路径")
-    label: str = Field("下载威胁分析报告", description="下载入口显示文本")
+    artifact_id: str = Field(..., description="交付件元数据标识，不是沙箱文件路径")
+    filename: str = Field(..., description="下载文件名")
+    mime_type: Literal["text/markdown", "text/html", "application/json"] = Field(
+        ..., description="交付件 MIME 类型"
+    )
+    label: str = Field(..., description="页面显示文本")
     download_src: str = Field(..., description="按需读取沙箱文件的受控下载链接")
+    preview_src: Optional[str] = Field(None, description="HTML 安全预览入口")
 
 
 # Message 在关联资源模型之前声明了前向引用，定义完成后显式解析，确保 API
@@ -183,7 +188,10 @@ class AsyncTaskStatusResponse(BaseModel):
     delivered: bool = Field(False, description="终态结果是否已写入主会话")
     result: Optional[str] = Field(None, description="终态任务报告")
     visualization: Optional["Visualization"] = Field(None, description="终态任务图表资源")
-    report: Optional["ReportArtifact"] = Field(None, description="终态任务的沙箱报告下载入口")
+    deliverables: List["DeliverableArtifact"] = Field(
+        default_factory=list,
+        description="终态任务生成的受控交付件",
+    )
     error: Optional[str] = Field(None, description="失败原因")
     run_id: Optional[str] = Field(None, description="最近一次运行 ID")
     updated_at: Optional[str] = Field(None, description="最近更新时间")

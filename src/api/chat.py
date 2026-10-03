@@ -36,6 +36,21 @@ from services.visualization_artifacts import (
 
 logger = logging.getLogger(__name__)
 
+
+def _agent_error_detail(exc: Exception) -> tuple[int, str]:
+    """将已知模型调用异常转换为可安全展示给用户的错误信息。"""
+    if getattr(exc, "status_code", None) == 402:
+        return 503, "模型服务余额或配额不足，请充值或更换模型密钥后重试"
+    if getattr(exc, "status_code", None) == 404:
+        return 503, "当前模型不受已配置供应商支持，请检查 DEEPSEEK_MODEL 配置"
+    if type(exc).__name__ in {
+        "OpenAIConnectionError",
+        "APIConnectionError",
+        "ConnectError",
+    }:
+        return 503, "模型服务暂时不可用，请检查网络和 DEEPSEEK_BASE_URL 配置"
+    return 500, "Agent 调用失败"
+
 router = APIRouter()
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 VUE_DIST_DIR = PROJECT_DIR / "frontend" / "dist"
@@ -115,25 +130,26 @@ async def visualization(artifact_id: str, download: bool = False) -> FileRespons
     return FileResponse(path, media_type=media_type, headers=headers)
 
 
-@app.get("/analysis/reports/{report_id}", include_in_schema=False, response_model=None)
-async def download_analysis_report(
-    report_id: str,
+@app.get("/deliverables/{artifact_id}", include_in_schema=False, response_model=None)
+async def download_deliverable(
+    artifact_id: str,
+    preview: bool = False,
     current_user: AuthResponse = Depends(get_current_user),
 ) -> Response:
-    """在用户下载时按归属从沙箱读取 Markdown，不在项目目录保留副本。"""
-    downloaded = await agent_loader.download_sandbox_report(current_user.user_id, report_id)
+    """按用户归属下载交付件；HTML 仅在显式预览时于受限上下文中打开。"""
+    downloaded = await agent_loader.download_sandbox_deliverable(current_user.user_id, artifact_id)
     if downloaded is None:
-        raise HTTPException(status_code=404, detail="报告不存在、已过期或无权访问")
-    filename, content = downloaded
-    return Response(
-        content=content,
-        media_type="text/markdown; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "X-Content-Type-Options": "nosniff",
-            "Cache-Control": "no-store",
-        },
-    )
+        raise HTTPException(status_code=404, detail="交付件不存在、已过期或无权访问")
+    filename, mime_type, content = downloaded
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+    }
+    if mime_type == "text/html" and preview:
+        headers["Content-Security-Policy"] = "sandbox allow-scripts"
+    else:
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return Response(content=content, media_type=f"{mime_type}; charset=utf-8", headers=headers)
 
 
 def _extract_answer(result: Any) -> str:
@@ -341,16 +357,8 @@ async def _run_chat_unlocked(request: ChatRequest, thread_id: str) -> ChatRespon
     except Exception as exc:
         # 记录异常类型和消息，便于区分模型、数据库或配置问题；
         logger.exception("Agent 调用异常: %s", type(exc).__name__)
-        if type(exc).__name__ in {
-            "OpenAIConnectionError",
-            "APIConnectionError",
-            "ConnectError",
-        }:
-            raise HTTPException(
-                status_code=503,
-                detail="模型服务暂时不可用，请检查网络和 DEEPSEEK_BASE_URL 配置",
-            ) from exc
-        raise HTTPException(status_code=500, detail="Agent 调用失败") from exc
+        status_code, detail = _agent_error_detail(exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
     answer = _extract_answer(result).strip()
     interrupts = result.get("__interrupt__", []) if isinstance(result, dict) else []
@@ -636,7 +644,8 @@ async def _stream_response_unlocked(
         logger.exception("Agent 流式调用异常: %s", type(exc).__name__)
         for tool_call_id in pending_tool_ids:
             yield _create_sse_message({"type": "tool_end", "tool_call_id": tool_call_id})
-        yield _create_sse_message({"type": "error", "message": "Agent 调用失败"})
+        _, detail = _agent_error_detail(exc)
+        yield _create_sse_message({"type": "error", "message": detail})
     finally:
         if stream is not None:
             await stream.aclose()

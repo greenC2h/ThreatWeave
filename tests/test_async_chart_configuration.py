@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import yaml
 from agent.backends.sandbox_proxy import SandboxBackendProxy
 from agent.memory.prompts import system_prompt
 from agent.subagents.async_registry import get_async_subagent_instructions
@@ -41,16 +42,15 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         configured_prompts = "\n".join(
             path.read_text(encoding="utf-8") for path in config_directory.glob("*.yaml")
         )
-        for unavailable in (
-            "check_async_task", "update_async_task", "cancel_async_task",
-            "list_async_tasks", "list_async_task", "才使用异步任务管理工具",
-        ):
-            self.assertNotIn(unavailable, instructions + configured_prompts)
+        for tool_name in ("check_async_task", "list_async_tasks", "cancel_async_task"):
+            self.assertIn(tool_name, instructions)
+        self.assertNotIn("update_async_task", instructions + configured_prompts)
         self.assertIn("`start_async_task`", instructions)
         self.assertIn("intel_ingestion_orchestrator", instructions)
         self.assertNotIn("intel_ingestor` 只能", instructions)
         self.assertIn("entity_relation_extractor", instructions)
         self.assertIn("threat_analyst", instructions)
+        self.assertIn("批次回执不包含格式化、入库或实体关系", instructions)
 
     def test_registers_the_threatweave_async_graphs(self) -> None:
         """Agent Protocol 配置必须只公开已确认的 ThreatWeave 图。"""
@@ -74,6 +74,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         threat_tools = [
             _configured_tool("threat_document_upsert"),
             _configured_tool("threat_document_get"),
+            _configured_tool("validate_extraction_evidence"),
             _configured_tool("threat_extraction_write"),
             _configured_tool("threat_graph_query"),
         ]
@@ -111,6 +112,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         threat_tools = [
             _configured_tool("threat_document_upsert"), _configured_tool("threat_document_get"),
+            _configured_tool("validate_extraction_evidence"),
             _configured_tool("threat_extraction_write"), _configured_tool("threat_graph_query"),
         ]
         with (
@@ -148,8 +150,24 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("/skills/subagents/threat_analyst/", config)
         self.assertNotIn("threat_extraction_write", config)
         self.assertNotIn("request_additional_info", config)
+        self.assertIn("build_threat_graph_html", config)
+        self.assertIn("DELIVERABLE:", config)
         self.assertIn("threat-analysis Skill", config)
         self.assertIn("威胁", config)
+
+    def test_threat_analyst_skill_front_matter_is_valid_yaml(self) -> None:
+        """Skill 元数据无效时，DeepAgents 会静默跳过完整交付流程。"""
+        skill_path = (
+            Path(__file__).resolve().parents[1]
+            / "src/agent/skills/subagents/threat_analyst/threat-analysis/SKILL.md"
+        )
+        text = skill_path.read_text(encoding="utf-8")
+        _, front_matter, _ = text.split("---", maxsplit=2)
+
+        metadata = yaml.safe_load(front_matter)
+
+        self.assertEqual(metadata["name"], "threat-analysis")
+        self.assertIn("Markdown", metadata["description"])
 
     def test_execution_and_read_graphs_share_topology_and_close_clients(self) -> None:
         """实际编译的图在读取期间没有资源时也必须保持兼容。"""
@@ -158,6 +176,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         threat_tools = [
             _configured_tool("threat_document_upsert"), _configured_tool("threat_document_get"),
+            _configured_tool("validate_extraction_evidence"),
             _configured_tool("threat_extraction_write"), _configured_tool("threat_graph_query"),
         ]
         with (

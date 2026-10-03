@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from api.chat import (
+    _agent_error_detail,
     _get_interrupt_values,
     _is_internal_middleware_stream,
     _is_subagent_stream,
+    _run_chat_unlocked,
     _get_stream_source,
     _get_subagent_name,
     _serialize_tool_args,
     _serialize_interrupt,
 )
+from agent.schema import ChatRequest
 
 
 class ChatInterruptTests(unittest.TestCase):
@@ -103,4 +107,42 @@ class ChatInterruptTests(unittest.TestCase):
         self.assertEqual(
             _serialize_tool_args({"subagent_type": "procurement_order", "description": "查询订单"}),
             '{"subagent_type": "procurement_order", "description": "查询订单"}',
+        )
+
+
+class ChatModelErrorTests(unittest.IsolatedAsyncioTestCase):
+    """验证模型服务错误能够转换为用户可理解的 HTTP 响应。"""
+
+    async def test_maps_model_balance_error_to_service_unavailable(self) -> None:
+        """HTTP 402 不应被笼统显示为 Agent 调用失败。"""
+        agent = MagicMock()
+        balance_error = RuntimeError("Insufficient Balance")
+        balance_error.status_code = 402
+        agent.ainvoke = AsyncMock(side_effect=balance_error)
+        request = ChatRequest(message="生成威胁报告", user_id="u1", username="测试用户")
+
+        with patch("api.chat.agent_loader.get_agent_for_user", new=AsyncMock(return_value=agent)):
+            with self.assertRaisesRegex(Exception, "模型服务余额或配额不足") as raised:
+                await _run_chat_unlocked(request, "thread-1")
+
+        self.assertEqual(raised.exception.status_code, 503)
+
+    def test_uses_the_same_balance_message_for_streaming_errors(self) -> None:
+        """流式接口必须复用同步接口的模型余额错误说明。"""
+        balance_error = RuntimeError("Insufficient Balance")
+        balance_error.status_code = 402
+
+        self.assertEqual(
+            _agent_error_detail(balance_error),
+            (503, "模型服务余额或配额不足，请充值或更换模型密钥后重试"),
+        )
+
+    def test_maps_unsupported_model_to_configuration_error(self) -> None:
+        """模型供应商拒绝未知模型时应给出配置修复方向。"""
+        model_error = RuntimeError("model not available")
+        model_error.status_code = 404
+
+        self.assertEqual(
+            _agent_error_detail(model_error),
+            (503, "当前模型不受已配置供应商支持，请检查 DEEPSEEK_MODEL 配置"),
         )

@@ -30,7 +30,8 @@ async def orchestrate_intelligence_ingestion(
 
     每批最多三篇且受字符预算限制。每批都会新建无状态的 A 格式化图，因此前一批正文
     不会进入下一批上下文。``max_articles`` 限制本次从来源拉取的文章数，默认三篇。
-    ``article_url`` 仅接受属于该已批准来源的一篇文章地址。
+    ``article_url`` 仅接受属于该已批准来源的一篇文章地址。返回值只确认批次已经提交，
+    不表示格式化、入库或 B 已完成，也不提供文档 ID。
     """
     async def run_formatter(batch_instruction: str) -> object:
         if _system_formatter_factory is None:

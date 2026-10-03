@@ -24,8 +24,11 @@ class OrchestrationReport:
     failed_urls: tuple[str, ...]
 
     def to_summary(self) -> str:
-        """返回给编排 Agent 的简洁执行摘要。"""
-        summary = f"来源 {self.source_id}：已分配 {self.collected_count} 篇文章到 {self.batch_count} 个批次。"
+        """返回批次受理状态，不将异步下游处理结果伪装成同步回执。"""
+        summary = (
+            f"来源 {self.source_id}：已将 {self.collected_count} 篇文章提交到 {self.batch_count} 个批次。"
+            "格式化、入库和实体关系抽取在下游异步执行；本摘要不提供文档 ID 或最终写入状态。"
+        )
         if self.failed_urls:
             summary += f" 采集失败 {len(self.failed_urls)} 篇。"
         return summary

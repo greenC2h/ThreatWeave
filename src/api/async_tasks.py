@@ -39,8 +39,10 @@ REPORT_REQUEST_NEGATION_PATTERN = re.compile(
     r"(?:报告|报表|分析报告|markdown)|(?:no|without|不要)\s+\breport",
     re.IGNORECASE,
 )
-REPORT_PATH_LINE_PATTERN = re.compile(
-    r"(?im)^\s*REPORT_PATH\s*:\s*`?(/analysis/report_\d{8}_\d{6}\.md)`?\s*$"
+DELIVERABLE_LINE_PATTERN = re.compile(
+    r"(?im)^\s*DELIVERABLE\s*:\s*"
+    r"(/deliverables/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:md|html|json))\s*\|\s*"
+    r"(text/markdown|text/html|application/json)\s*\|\s*([^\r\n|]{1,120})\s*$"
 )
 
 
@@ -137,15 +139,17 @@ def _run_limit_error(content: str) -> str | None:
     return None
 
 
-def _extract_report_path(content: str) -> str | None:
-    """读取威胁分析器按交付协议写入沙箱的报告路径。"""
-    match = REPORT_PATH_LINE_PATTERN.search(content)
-    return match.group(1) if match else None
+def _extract_deliverables(content: str) -> list[dict[str, str]]:
+    """读取异步 Agent 的交付协议，并拒绝任何未受控的沙箱路径。"""
+    return [
+        {"path": path, "mime_type": mime_type, "label": label.strip()}
+        for path, mime_type, label in DELIVERABLE_LINE_PATTERN.findall(content)
+    ]
 
 
 def _sanitize_task_content(content: str) -> str:
     """移除系统登记报告和图表时不应展示的内部标识。"""
-    content = REPORT_PATH_LINE_PATTERN.sub("", content)
+    content = DELIVERABLE_LINE_PATTERN.sub("", content)
     return _INTERNAL_ARTIFACT_LINE_PATTERN.sub("", content).strip()
 
 
@@ -182,13 +186,13 @@ async def get_async_task_status(
     content = ""
     visualization = None
     report_requested = False
-    report_path = None
+    deliverable_specs: list[dict[str, str]] = []
     try:
         state = await client.threads.get_state(task_id)
         values = _get_attr(state, "values", {})
         content, visualization = _extract_task_output(values)
         report_requested = _task_requests_report(values)
-        report_path = _extract_report_path(content)
+        deliverable_specs = _extract_deliverables(content)
         content = _sanitize_task_content(content)
     except Exception as exc:
         # run 成功不代表已读到结果；失败必须可重试，不能写入占位成功消息。
@@ -210,7 +214,7 @@ async def get_async_task_status(
                 "mime_type": visualization.get("mime_type", "image/png"),
             }
         limit_error = _run_limit_error(content)
-        report = None
+        deliverables: list[dict[str, str]] = []
         if status == "success" and limit_error:
             # Agent Protocol 会将中间件的 end 视为成功终态；不能把限额错误伪装成报告。
             status = "error"
@@ -222,25 +226,15 @@ async def get_async_task_status(
                 else f"后台任务未完成：{error}"
             )
         elif status == "success":
-            if report_requested and report_path is None:
+            has_markdown_deliverable = any(
+                item["mime_type"] == "text/markdown" for item in deliverable_specs
+            )
+            has_html_deliverable = any(item["mime_type"] == "text/html" for item in deliverable_specs)
+            if report_requested and not has_markdown_deliverable:
                 status = "error"
                 error = "威胁分析未生成可下载报告，请重试。"
                 main_message = f"后台任务未完成：{error}"
-            elif report_requested:
-                try:
-                    report = await agent_loader.register_sandbox_report(task_id, report_path)
-                except Exception as exc:
-                    raise HTTPException(
-                        status_code=502,
-                        detail="无法登记威胁分析报告，请稍后重试",
-                    ) from exc
-                if report is None:
-                    status = "error"
-                    error = "威胁分析报告不可用，请重试。"
-                    main_message = f"后台任务未完成：{error}"
-                else:
-                    main_message = "图谱和威胁分析报告已生成。" if visualization else "威胁分析报告已生成。"
-            elif visualization is None and not content:
+            elif visualization is None and not content and not deliverable_specs:
                 # 通用异步任务允许返回普通文本；只有完全没有正文和交付物时，
                 # 才能判定为远端成功状态下的空结果，避免伪造成功交付。
                 raise HTTPException(status_code=502, detail="异步任务未返回可交付结果，请稍后重试")
@@ -253,12 +247,26 @@ async def get_async_task_status(
                 "interrupted": "后台任务已中断。",
             }.get(status, "后台任务未能完成。")
             main_message = f"后台任务未完成：{error}"
+        if status == "success" and deliverable_specs:
+            try:
+                deliverables = await agent_loader.register_sandbox_deliverables(task_id, deliverable_specs)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail="无法登记任务交付件，请稍后重试",
+                ) from exc
+            if len(deliverables) != len(deliverable_specs):
+                status = "error"
+                error = "任务交付件无效或不可用，请重试。"
+                main_message = f"后台任务未完成：{error}"
+            else:
+                main_message = f"已生成 {len(deliverables)} 个交付件。"
         try:
             delivered = await agent_loader.publish_async_task_result(
                 task_id,
                 content=main_message,
                 artifact=artifact,
-                report=report,
+                deliverables=deliverables,
             )
         except Exception as exc:
             raise HTTPException(
@@ -273,15 +281,17 @@ async def get_async_task_status(
         delivered=delivered,
         result=main_message if is_terminal else None,
         visualization=visualization if is_terminal else None,
-        report=(
+        deliverables=[
             {
-                "report_id": report["report_id"],
-                "label": report["label"],
-                "download_src": f"/analysis/reports/{report['report_id']}?user_id={user_id}",
+                **deliverable,
+                "download_src": f"/deliverables/{deliverable['artifact_id']}?user_id={user_id}",
+                "preview_src": (
+                    f"/deliverables/{deliverable['artifact_id']}?user_id={user_id}&preview=1"
+                    if deliverable["mime_type"] == "text/html" else None
+                ),
             }
-            if is_terminal and report is not None
-            else None
-        ),
+            for deliverable in deliverables
+        ],
         error=error,
         run_id=_get_attr(latest_run, "run_id"),
         updated_at=str(_get_attr(latest_run, "updated_at", "")) or None,

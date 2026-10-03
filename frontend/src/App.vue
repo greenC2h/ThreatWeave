@@ -370,7 +370,7 @@ function startAsyncTaskPolling(taskId, delegationMessage = null) {
           delegationMessage.toolStatus = asyncTaskToolStatus(status);
           delegationMessage.result = status.result || status.error || "后台任务未返回报告";
           delegationMessage.visualization = status.visualization || null;
-          delegationMessage.report = status.report || null;
+          delegationMessage.deliverables = status.deliverables || [];
           delegationMessage.deliveryStatus = status.delivered ? "delivered" : "pending";
         }
         if (status.delivered) {
@@ -459,7 +459,7 @@ function normalizeMessage(message) {
     // 委派记录用于异步任务轮询和恢复，不作为用户可见消息呈现。
     isInternalDelegation: message.role === "delegation",
     visualization: message.visualization || null,
-    report: message.report || null,
+    deliverables: message.deliverables || [],
     asyncTaskId: message.async_task_id || "",
   };
 }
@@ -467,7 +467,7 @@ function normalizeMessage(message) {
 function restoreAsyncDelegationResults(restoredMessages) {
   const delegations = restoredMessages
     .map((message, index) => ({ message, index }))
-    .filter(({ message }) => message.role === "delegation" && !message.result && !message.visualization && !message.report);
+    .filter(({ message }) => message.role === "delegation" && !message.result && !message.visualization && !(message.deliverables || []).length);
 
   for (const { message: delegation, index } of delegations) {
     const result = restoredMessages
@@ -477,7 +477,7 @@ function restoreAsyncDelegationResults(restoredMessages) {
     if (result) {
       delegation.result = result.content;
       delegation.visualization = result.visualization || null;
-      delegation.report = result.report || null;
+      delegation.deliverables = result.deliverables || [];
     }
   }
 }
@@ -494,7 +494,7 @@ function restoreSessionState(response) {
         message.toolStatus = asyncTaskToolStatus(completed);
         message.result = completed.result || completed.error || message.result;
         message.visualization = completed.visualization || message.visualization;
-        message.report = completed.report || message.report;
+        message.deliverables = completed.deliverables || message.deliverables;
       } else {
         // 历史的 done 可能仅表示启动工具完成，必须查询后台任务的真实终态。
         message.toolStatus = "calling";
@@ -657,7 +657,7 @@ function streamHandlers() {
         source: event.source || "main",
         subagentName: event.subagent_name || "",
         visualization: null,
-        report: null,
+        deliverables: [],
         asyncTaskId: "",
       });
     },

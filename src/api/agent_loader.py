@@ -20,6 +20,7 @@ import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import HTTPException
@@ -34,8 +35,9 @@ from agent.schema import AsyncTaskBinding, UserGroup
 AgentFactory = Callable[..., Awaitable[Any]]
 SESSION_NAMESPACE_PREFIX = ("sessions",)
 ASYNC_TASK_NAMESPACE_PREFIX = ("async_tasks",)
-ANALYSIS_REPORT_NAMESPACE_PREFIX = ("analysis_reports",)
+SANDBOX_DELIVERABLE_NAMESPACE_PREFIX = ("sandbox_deliverables",)
 ASYNC_TASK_MESSAGE_PREFIX = "async-task-result:"
+DELIVERABLE_MIME_TYPES = frozenset({"text/markdown", "text/html", "application/json"})
 
 
 class AgentLoader:
@@ -322,47 +324,75 @@ class AgentLoader:
             thread_id=str(value["thread_id"]),
         )
 
-    async def register_sandbox_report(self, task_id: str, report_path: str) -> dict[str, str] | None:
-        """登记异步任务生成的沙箱报告元数据，不复制报告内容到项目存储。"""
+    async def register_sandbox_deliverables(
+        self,
+        task_id: str,
+        deliverables: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """登记异步任务写入用户沙箱的交付件，不复制文件内容。"""
         binding = await self.get_async_task_binding(task_id)
         if binding is None:
-            return None
-
-        # 同一任务重复轮询必须复用同一个报告入口，避免产生无效的元数据记录。
-        report_id = uuid.uuid5(uuid.NAMESPACE_URL, f"analysis-report:{task_id}:{report_path}").hex
+            return []
         await self.initialize()
         assert self._store is not None
-        await self._store.aput(
-            ANALYSIS_REPORT_NAMESPACE_PREFIX,
-            report_id,
-            {
-                "user_id": binding.user_id,
-                "report_path": report_path,
-                "filename": report_path.rsplit("/", 1)[-1],
-            },
-            index=False,
-        )
-        return {"report_id": report_id, "label": "下载威胁分析报告"}
 
-    async def download_sandbox_report(self, user_id: str, report_id: str) -> tuple[str, bytes] | None:
-        """按用户归属从其沙箱流式读取报告；报告正文不会落到项目本地。"""
+        registered: list[dict[str, str]] = []
+        for item in deliverables:
+            path = str(item.get("path", ""))
+            mime_type = str(item.get("mime_type", ""))
+            parsed_path = PurePosixPath(path)
+            if (
+                mime_type not in DELIVERABLE_MIME_TYPES
+                or not path.startswith("/deliverables/")
+                or parsed_path.parent != PurePosixPath("/deliverables")
+                or parsed_path.name in {"", ".", ".."}
+            ):
+                continue
+            artifact_id = uuid.uuid5(uuid.NAMESPACE_URL, f"deliverable:{task_id}:{path}").hex
+            filename = parsed_path.name
+            label = str(item.get("label") or filename).strip()[:120] or filename
+            await self._store.aput(
+                SANDBOX_DELIVERABLE_NAMESPACE_PREFIX,
+                artifact_id,
+                {
+                    "user_id": binding.user_id,
+                    "path": path,
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "label": label,
+                },
+                index=False,
+            )
+            registered.append({
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "label": label,
+            })
+        return registered
+
+    async def download_sandbox_deliverable(
+        self,
+        user_id: str,
+        artifact_id: str,
+    ) -> tuple[str, str, bytes] | None:
+        """按用户归属从沙箱读取已登记交付件。"""
         await self.initialize()
         assert self._store is not None
         assert self._sandbox_manager is not None
-        item = await self._store.aget(ANALYSIS_REPORT_NAMESPACE_PREFIX, report_id)
-        if item is None:
+        item = await self._store.aget(SANDBOX_DELIVERABLE_NAMESPACE_PREFIX, artifact_id)
+        if item is None or item.value.get("user_id") != user_id:
             return None
         metadata = item.value
-        if metadata.get("user_id") != user_id:
-            return None
-
         backend = await self._sandbox_manager.get_backend(user_id)
-        report_path = str(metadata.get("report_path", ""))
-        response = (await asyncio.to_thread(backend.download_files, [report_path]))[0]
-        # 空文件不是有效报告；返回空值让 API 给出明确的 404，而不是下载一个空附件。
+        response = (await asyncio.to_thread(backend.download_files, [str(metadata.get("path", ""))]))[0]
         if response.error or not response.content:
             return None
-        return str(metadata.get("filename") or "threat-analysis.md"), bytes(response.content)
+        return (
+            str(metadata.get("filename") or "deliverable"),
+            str(metadata.get("mime_type") or "application/octet-stream"),
+            bytes(response.content),
+        )
 
     async def publish_async_task_result(
         self,
@@ -370,7 +400,7 @@ class AgentLoader:
         *,
         content: str,
         artifact: dict[str, str] | None,
-        report: dict[str, str] | None = None,
+        deliverables: list[dict[str, str]] | None = None,
     ) -> bool:
         """将终态异步任务结果作为主 Agent 消息幂等写入主会话。"""
         binding = await self.get_async_task_binding(task_id)
@@ -384,7 +414,7 @@ class AgentLoader:
                 binding,
                 content=content,
                 artifact=artifact,
-                report=report,
+                deliverables=deliverables or [],
             )
 
     async def _publish_bound_result(
@@ -393,7 +423,7 @@ class AgentLoader:
         *,
         content: str,
         artifact: dict[str, str] | None,
-        report: dict[str, str] | None,
+        deliverables: list[dict[str, str]],
     ) -> bool:
         """在持有会话 guard 后检查幂等性和暂停状态，再写入结果。"""
         task_id = binding.task_id
@@ -421,8 +451,7 @@ class AgentLoader:
         ]
         if artifact is not None:
             content_blocks.append(artifact)
-        if report is not None:
-            content_blocks.append({"type": "sandbox_report", **report})
+        content_blocks.extend({"type": "sandbox_deliverable", **deliverable} for deliverable in deliverables)
 
         # 使用固定消息 ID 配合 messages reducer，避免多次轮询或重试产生重复消息。
         await agent.aupdate_state(

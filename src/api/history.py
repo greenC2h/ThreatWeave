@@ -17,9 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from agent.schema import (
     AuthResponse,
+    DeliverableArtifact,
     DeleteSessionResponse,
     Message,
-    ReportArtifact,
     Session,
     SessionListResponse,
     SessionMessagesResponse,
@@ -30,7 +30,7 @@ from api.async_tasks import extract_async_task_id
 from api.auth import get_current_user
 from api.message_utils import (
     content_to_text,
-    extract_sandbox_report,
+    extract_sandbox_deliverables,
     extract_visualization,
     serialize_interrupt,
 )
@@ -83,17 +83,21 @@ def _task_description(args: Any) -> str:
     return str(description).strip() if description else ""
 
 
-def _report_for_user(content: Any, user_id: str) -> ReportArtifact | None:
-    """将 checkpoint 的报告标识转换为当前用户可下载的受控 URL。"""
-    report = extract_sandbox_report(content)
-    if report is None:
-        return None
-    report_id = report["report_id"]
-    return ReportArtifact(
-        report_id=report_id,
-        label=report["label"],
-        download_src=f"/analysis/reports/{report_id}?user_id={user_id}",
-    )
+def _deliverables_for_user(content: Any, user_id: str) -> list[DeliverableArtifact]:
+    """将 checkpoint 的交付件标识转换为当前用户受控下载入口。"""
+    result: list[DeliverableArtifact] = []
+    for deliverable in extract_sandbox_deliverables(content):
+        artifact_id = deliverable["artifact_id"]
+        download_src = f"/deliverables/{artifact_id}?user_id={user_id}"
+        result.append(DeliverableArtifact(
+            artifact_id=artifact_id,
+            filename=deliverable["filename"],
+            mime_type=deliverable["mime_type"],
+            label=deliverable["label"],
+            download_src=download_src,
+            preview_src=f"{download_src}&preview=1" if deliverable["mime_type"] == "text/html" else None,
+        ))
+    return result
 
 
 def serialize_messages(messages: list[Any], user_id: str = "u1") -> list[Message]:
@@ -119,8 +123,8 @@ def serialize_messages(messages: list[Any], user_id: str = "u1") -> list[Message
         if role == "assistant":
             # AIMessage 可同时携带文本和工具调用，必须先保留文本的原始顺序。
             additional_kwargs = _message_value(message, "additional_kwargs", {}) or {}
-            report = _report_for_user(message_content, user_id)
-            if content or report:
+            deliverables = _deliverables_for_user(message_content, user_id)
+            if content or deliverables:
                 source = str(additional_kwargs.get("source", "main"))
                 # 子 Agent 自身的文本是内部执行记录，用户历史只展示主 Agent 交付。
                 if source != "main":
@@ -134,7 +138,7 @@ def serialize_messages(messages: list[Any], user_id: str = "u1") -> list[Message
                         source=source,
                         async_task_id=additional_kwargs.get("async_task_id"),
                         visualization=Visualization(**visualization) if visualization else None,
-                        report=report,
+                        deliverables=deliverables,
                         created_at=now,
                     )
                 )

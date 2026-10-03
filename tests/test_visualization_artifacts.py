@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from services import visualization_artifacts
 from agent.schema import AuthResponse
-from api.chat import download_analysis_report, visualization
+from api.chat import download_deliverable, visualization
 
 
 class VisualizationArtifactTests(unittest.IsolatedAsyncioTestCase):
@@ -101,24 +101,22 @@ class VisualizationArtifactTests(unittest.IsolatedAsyncioTestCase):
             f'attachment; filename="chart-{artifact["artifact_id"]}.html"',
         )
 
-    async def test_report_download_reads_sandbox_content_without_local_artifact(self) -> None:
-        """报告下载只透传沙箱字节，不走本地图表 artifact 存储。"""
+    async def test_deliverable_download_enforces_user_scope_and_html_preview_policy(self) -> None:
+        """统一交付件入口只从所属用户沙箱读取，并隔离 HTML 预览。"""
         with patch(
-            "api.chat.agent_loader.download_sandbox_report",
-            new=AsyncMock(return_value=("report_20260928_120000.md", b"# report")),
+            "api.chat.agent_loader.download_sandbox_deliverable",
+            new=AsyncMock(return_value=("graph.html", "text/html", b"<html>graph</html>")),
         ) as download:
-            response = await download_analysis_report(
-                "e" * 32,
+            response = await download_deliverable(
+                "f" * 32,
+                preview=True,
                 current_user=AuthResponse(user_id="u1", username="tester"),
             )
 
-        download.assert_awaited_once_with("u1", "e" * 32)
-        self.assertEqual(response.body, b"# report")
-        self.assertTrue(response.media_type.startswith("text/markdown"))
-        self.assertEqual(
-            response.headers["content-disposition"],
-            'attachment; filename="report_20260928_120000.md"',
-        )
+        download.assert_awaited_once_with("u1", "f" * 32)
+        self.assertEqual(response.body, b"<html>graph</html>")
+        self.assertEqual(response.headers["content-security-policy"], "sandbox allow-scripts")
+        self.assertNotIn("content-disposition", response.headers)
 
 
 if __name__ == "__main__":

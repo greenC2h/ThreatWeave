@@ -135,10 +135,20 @@
           <DownloadSimple :size="15" weight="bold" aria-hidden="true" />
         </a>
       </div>
-      <div v-if="reportDownload" class="visualization-preview report-download">
-        <span class="visualization-label">威胁分析报告</span>
-        <a class="visualization-download" :href="reportDownload" download="threat-analysis.md">
-          <span>{{ message.report.label || '下载威胁分析报告' }}</span>
+      <div v-for="deliverable in deliverables" :key="deliverable.artifactId" class="visualization-preview report-download">
+        <span class="visualization-label">{{ deliverable.mimeType === 'text/html' ? 'HTML 图谱' : '文件交付物' }}</span>
+        <a
+          v-if="deliverable.previewSrc"
+          class="visualization-link"
+          :href="deliverable.previewSrc"
+          target="_blank"
+          rel="noopener"
+        >
+          <span>打开 {{ deliverable.label }}</span>
+          <ArrowUpRight :size="15" weight="bold" aria-hidden="true" />
+        </a>
+        <a class="visualization-download" :href="deliverable.downloadSrc" :download="deliverable.filename">
+          <span>下载 {{ deliverable.label }}</span>
           <DownloadSimple :size="15" weight="bold" aria-hidden="true" />
         </a>
       </div>
@@ -177,7 +187,16 @@ const isDetailsExpanded = ref(false);
 const visualizationSrc = computed(() => safeVisualizationUrl(props.message.visualization?.src));
 const visualizationImageSrc = computed(() => safeImageUrl(props.message.visualization?.src));
 const visualizationDownload = computed(() => safeVisualizationUrl(props.message.visualization?.download_src));
-const reportDownload = computed(() => safeVisualizationUrl(props.message.report?.download_src));
+const deliverables = computed(() => (props.message.deliverables || [])
+  .map((deliverable) => ({
+    artifactId: deliverable.artifact_id,
+    filename: deliverable.filename,
+    mimeType: deliverable.mime_type,
+    label: deliverable.label || deliverable.filename,
+    downloadSrc: safeVisualizationUrl(deliverable.download_src),
+    previewSrc: safeVisualizationUrl(deliverable.preview_src),
+  }))
+  .filter((deliverable) => deliverable.artifactId && deliverable.downloadSrc));
 const toolStatusLabel = computed(() => ({
   calling: "正在处理", done: "已完成", failed: "执行失败", pending: "等待处理",
   interrupted: "等待确认", cancelled: "已取消", timeout: "已超时",

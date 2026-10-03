@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from api.agent_loader import AgentLoader
 from agent.schema import AsyncTaskBinding
 from api.async_tasks import (
-    _extract_report_path,
+    _extract_deliverables,
     _sanitize_task_content,
     extract_async_task_id,
     get_async_task_status,
@@ -37,7 +37,7 @@ def _configured_tool(name: str):
     return tool(test_tool)
 
 
-REPORT_PATH = "/analysis/report_20260928_010203.md"
+DELIVERABLE_LINE = "DELIVERABLE: /deliverables/threat-report.md | text/markdown | 下载威胁分析报告"
 
 
 class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
@@ -54,9 +54,8 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         self.session_patch.start()
         self.addCleanup(self.session_patch.stop)
 
-    async def test_delivers_completed_chart_artifact_to_main_thread(self) -> None:
-        """完成任务应将 artifact 投递主会话并返回给前端任务卡片。"""
-        artifact_id = "a" * 32
+    async def test_delivers_multiple_sandbox_deliverables_to_main_thread(self) -> None:
+        """完成任务应登记多个交付件并投递主会话。"""
         client = SimpleNamespace(
             runs=SimpleNamespace(
                 list=AsyncMock(return_value=[{"status": "success", "run_id": "run-1"}])
@@ -67,17 +66,11 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
                         values={
                             "messages": [
                                 {"role": "human", "content": "生成采购分析报告和趋势图"},
-                                {
-                                    "role": "tool",
-                                    "content": json.dumps(
-                                        {
-                                            "type": "chart_artifact",
-                                            "artifact_id": artifact_id,
-                                            "mime_type": "text/html",
-                                        },
-                                    ),
-                                },
-                                {"role": "assistant", "content": f"分析完成。\nREPORT_PATH: {REPORT_PATH}"},
+                                {"role": "assistant", "content": (
+                                    "分析完成。\n"
+                                    "DELIVERABLE: /deliverables/threat-report.md | text/markdown | 下载威胁分析报告\n"
+                                    "DELIVERABLE: /deliverables/threat-graph.html | text/html | 打开威胁关系图"
+                                )},
                             ]
                         }
                     )
@@ -88,8 +81,11 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("api.async_tasks.get_client", return_value=client),
             patch(
-                "api.async_tasks.agent_loader.register_sandbox_report",
-                new=AsyncMock(return_value={"report_id": "b" * 32, "label": "下载采购分析报告"}),
+                "api.async_tasks.agent_loader.register_sandbox_deliverables",
+                new=AsyncMock(return_value=[
+                    {"artifact_id": "b" * 32, "filename": "threat-report.md", "mime_type": "text/markdown", "label": "下载威胁分析报告"},
+                    {"artifact_id": "c" * 32, "filename": "threat-graph.html", "mime_type": "text/html", "label": "打开威胁关系图"},
+                ]),
             ) as register,
             patch(
                 "api.async_tasks.agent_loader.publish_async_task_result",
@@ -100,12 +96,10 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(response.done)
         self.assertTrue(response.delivered)
-        self.assertIsNotNone(response.visualization)
-        self.assertEqual(response.visualization.artifact_id, artifact_id)
-        self.assertEqual(response.visualization.mime_type, "text/html")
-        self.assertEqual(response.report.report_id, "b" * 32)
-        register.assert_awaited_once_with("task-1", REPORT_PATH)
-        self.assertEqual(publish.await_args.kwargs["report"]["report_id"], "b" * 32)
+        self.assertEqual(len(response.deliverables), 2)
+        self.assertEqual(response.deliverables[1].preview_src, "/deliverables/" + "c" * 32 + "?user_id=u1&preview=1")
+        register.assert_awaited_once()
+        self.assertEqual(len(publish.await_args.kwargs["deliverables"]), 2)
 
     async def test_chart_only_task_does_not_require_or_publish_report(self) -> None:
         """只要求图表时，成功终态不能凭空出现报告下载入口。"""
@@ -128,9 +122,9 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
             response = await get_async_task_status("task-1", user_id="u1")
 
         self.assertEqual(response.status, "success")
-        self.assertIsNone(response.report)
+        self.assertEqual(response.deliverables, [])
         self.assertEqual(response.result, "图表已生成。")
-        self.assertIsNone(publish.await_args.kwargs["report"])
+        self.assertEqual(publish.await_args.kwargs["deliverables"], [])
 
     async def test_report_request_without_report_path_remains_an_error(self) -> None:
         """明确要求报告但子 Agent 未写入文件时，不能伪装成成功。"""
@@ -151,6 +145,31 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, "error")
         self.assertIn("未生成可下载报告", response.error)
+        self.assertIn("后台任务未完成", publish.await_args.kwargs["content"])
+
+    async def test_missing_requested_report_does_not_create_api_fallback(self) -> None:
+        """C 未写入请求的报告时，应明确失败而非由 API 代写分析交付件。"""
+        client = SimpleNamespace(
+            runs=SimpleNamespace(list=AsyncMock(return_value=[{"status": "success"}])),
+            threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
+                "messages": [
+                    {"role": "human", "content": "生成 Markdown 威胁分析报告和 HTML 关系图"},
+                    {"type": "tool", "name": "threat_graph_query", "content": json.dumps({
+                        "entities": [{"id": 1, "canonical_value": "OpenClaw"}], "relations": [],
+                    })},
+                    {"role": "assistant", "content": "分析完成，但未写入文件"},
+                ],
+            }))),
+        )
+        with (
+            patch("api.async_tasks.get_client", return_value=client),
+            patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)) as publish,
+        ):
+            response = await get_async_task_status("task-1", user_id="u1")
+
+        self.assertEqual(response.status, "error")
+        self.assertIn("未生成可下载报告", response.error)
+        self.assertEqual(response.deliverables, [])
         self.assertIn("后台任务未完成", publish.await_args.kwargs["content"])
 
     async def test_returns_pending_when_remote_thread_has_no_runs(self) -> None:
@@ -208,10 +227,10 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(content, "结论：采购金额集中。\n建议：复核大额订单。")
 
-    def test_extracts_only_standard_sandbox_report_path(self) -> None:
-        """下载登记只能接受子 Agent 输出的标准沙箱报告路径。"""
-        self.assertEqual(_extract_report_path(f"结论\nREPORT_PATH: {REPORT_PATH}"), REPORT_PATH)
-        self.assertIsNone(_extract_report_path("REPORT_PATH: /tmp/report.md"))
+    def test_extracts_only_standard_sandbox_deliverables(self) -> None:
+        """下载登记只能接受受控目录、MIME 类型和文件名组成的交付协议。"""
+        self.assertEqual(_extract_deliverables(DELIVERABLE_LINE)[0]["path"], "/deliverables/threat-report.md")
+        self.assertEqual(_extract_deliverables("DELIVERABLE: /tmp/report.md | text/markdown | 报告"), [])
 
     def test_report_negation_does_not_turn_chart_only_request_into_report_request(self) -> None:
         from api.async_tasks import _task_requests_report
@@ -257,13 +276,13 @@ class AsyncTaskDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 task_id,
                 content="图表已生成。",
                 artifact={"type": "chart_artifact", "artifact_id": "a" * 32, "mime_type": "text/html"},
-                report={"report_id": "b" * 32, "label": "下载采购分析报告"},
+                deliverables=[{"artifact_id": "b" * 32, "filename": "report.md", "mime_type": "text/markdown", "label": "下载报告"}],
             )
             delivered_again = await loader.publish_async_task_result(
                 task_id,
                 content="图表已生成。",
                 artifact={"type": "chart_artifact", "artifact_id": "a" * 32, "mime_type": "text/html"},
-                report={"report_id": "b" * 32, "label": "下载采购分析报告"},
+                deliverables=[{"artifact_id": "b" * 32, "filename": "report.md", "mime_type": "text/markdown", "label": "下载报告"}],
             )
 
         self.assertTrue(delivered)
@@ -273,7 +292,7 @@ class AsyncTaskDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.id, f"async-task-result:{task_id}")
         self.assertEqual(message.additional_kwargs["source"], "main")
         self.assertEqual(message.content[1]["artifact_id"], "a" * 32)
-        self.assertEqual(message.content[2]["report_id"], "b" * 32)
+        self.assertEqual(message.content[2]["artifact_id"], "b" * 32)
 
 
 class NonStreamingAsyncTaskBindingTests(unittest.IsolatedAsyncioTestCase):

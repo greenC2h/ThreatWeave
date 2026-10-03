@@ -19,6 +19,11 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
     @Override
     @Transactional
     public Map<String, Object> upsertDocument(ThreatWeaveRequests.DocumentUpsertRequest request) {
+        List<Map<String, Object>> existingDocuments = jdbcTemplate.queryForList(
+                "SELECT id, content_sha256 FROM threatweave.documents WHERE doc_key = ? FOR UPDATE",
+                request.docKey());
+        boolean hasContentChanged = !existingDocuments.isEmpty()
+                && !request.contentSha256().equals(existingDocuments.get(0).get("content_sha256"));
         jdbcTemplate.update("""
             INSERT INTO threatweave.documents (doc_key, source_name, external_id, title, url, published_at, content, content_sha256, formatted_at, ingested_at)
             VALUES (?, ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, now(), now())
@@ -27,7 +32,13 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
               content_sha256 = EXCLUDED.content_sha256, formatted_at = now(), ingested_at = now()
             """, request.docKey(), request.sourceName(), request.externalId(), request.title(), request.url(),
             request.publishedAt(), request.content(), request.contentSha256());
-        return getDocumentByKey(request.docKey());
+        Map<String, Object> document = getDocumentByKey(request.docKey());
+        if (hasContentChanged) {
+            // Provenance positions are offsets into the formatted body. Keeping them after
+            // an overwrite would make old evidence falsely point at the new document.
+            jdbcTemplate.update("DELETE FROM threatweave.provenance WHERE document_id = ?", document.get("id"));
+        }
+        return document;
     }
 
     @Override

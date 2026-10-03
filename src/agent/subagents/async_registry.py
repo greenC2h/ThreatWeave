@@ -11,7 +11,7 @@ from deepagents import AsyncSubAgent
 
 from agent.tools.mcp_client import load_threatweave_tools
 from agent.tools.threatweave_task_tools import submit_entity_extraction
-from agent.tools.threat_graph_tools import generate_threat_graph
+from agent.tools.threat_graph_tools import build_threat_graph_html, generate_network_graph_html
 from agent.tools.intel_orchestrator_tools import orchestrate_intelligence_ingestion
 
 
@@ -43,14 +43,14 @@ async def _load_intel_ingestion_orchestrator_tools() -> list[Any]:
 
 async def _load_entity_relation_extractor_tools() -> list[Any]:
     common_tools, threat_tools = await load_threatweave_tools(
-        {"threat_document_get", "threat_extraction_write"}
+        {"threat_document_get", "validate_extraction_evidence", "threat_extraction_write"}
     )
     return [*common_tools, *threat_tools]
 
 
 async def _load_threat_analyst_tools() -> list[Any]:
     common_tools, threat_tools = await load_threatweave_tools({"threat_graph_query"})
-    return [*common_tools, *threat_tools, generate_threat_graph]
+    return [*common_tools, *threat_tools, generate_network_graph_html, build_threat_graph_html]
 
 
 ASYNC_SUBAGENTS: dict[str, AsyncSubagentRegistration] = {

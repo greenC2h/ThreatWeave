@@ -25,8 +25,10 @@ load_dotenv(PROJECT_ROOT / ".env", override=True)
 # 主 Agent 模型
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
+
 MAIN_MODEL = ChatDeepSeek(
-    model="deepseek-v4-flash",
+    model=DEEPSEEK_MODEL,
     extra_body={"thinking": {"type": "disabled"}},
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
@@ -34,7 +36,7 @@ MAIN_MODEL = ChatDeepSeek(
 
 # 摘要专用模型
 SUMMARY_MODEL = ChatDeepSeek(
-    model="deepseek-v4-flash",
+    model=DEEPSEEK_MODEL,
     temperature=0.3,
     extra_body={"thinking": {"type": "disabled"}},
     api_key=DEEPSEEK_API_KEY,
@@ -50,10 +52,10 @@ MAIN_AGENT_TOOL_RUN_LIMIT = 50
 SUBAGENT_MODEL_RUN_LIMIT = 50
 SUBAGENT_TOOL_RUN_LIMIT = 50
 ASYNC_SUBAGENT_MODEL_RUN_LIMIT = 50
-# 威胁分析通常要检索图谱、生成 HTML 图和报告；16 次工具调用仍可能
-# 在“查询 + 图表 + Markdown 报告”的完整流程中提前终止。提高到 32 只扩大单次运行预算，
-# 不改变每次新询问重新计数的语义，也继续保留循环保护。
-ASYNC_SUBAGENT_TOOL_RUN_LIMIT = 32
+# 威胁分析的完整交付需要读取 Skill、查询图谱、生成 HTML、写入多个用户文件并回传协议。
+# 32 次会在“Markdown + HTML 图”组合任务中提前终止；60 次仍保留单次 run 的循环保护，
+# 但允许一次完成真实用户所需的多交付件工作流。
+ASYNC_SUBAGENT_TOOL_RUN_LIMIT = 60
 
 # ============================================================
 # OpenSandbox 配置

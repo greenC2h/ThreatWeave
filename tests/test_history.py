@@ -267,17 +267,19 @@ class HistorySessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].visualization.kind, "link")
         self.assertEqual(messages[0].visualization.src, f"/visualizations/{artifact_id}")
 
-    def test_sandbox_report_is_restored_as_a_user_scoped_download(self) -> None:
-        """报告正文不进历史，但同一用户重开会话时仍可下载沙箱文件。"""
-        report_id = "d" * 32
+    def test_sandbox_deliverable_is_restored_as_a_user_scoped_download(self) -> None:
+        """交付件正文不进历史，但同一用户重开会话时仍可下载沙箱文件。"""
+        artifact_id = "d" * 32
         messages = serialize_messages(
             [
                 AIMessage(
                     id="async-task-result:task-1",
                     content=[
                         {
-                            "type": "sandbox_report",
-                            "report_id": report_id,
+                            "type": "sandbox_deliverable",
+                            "artifact_id": artifact_id,
+                            "filename": "threat-report.md",
+                            "mime_type": "text/markdown",
                             "label": "下载采购分析报告",
                         }
                     ],
@@ -288,10 +290,10 @@ class HistorySessionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(messages[0].content, "")
-        self.assertEqual(messages[0].report.report_id, report_id)
+        self.assertEqual(messages[0].deliverables[0].artifact_id, artifact_id)
         self.assertEqual(
-            messages[0].report.download_src,
-            f"/analysis/reports/{report_id}?user_id=user-2",
+            messages[0].deliverables[0].download_src,
+            f"/deliverables/{artifact_id}?user_id=user-2",
         )
 
 class ThreadHistoryReaderTests(unittest.IsolatedAsyncioTestCase):
