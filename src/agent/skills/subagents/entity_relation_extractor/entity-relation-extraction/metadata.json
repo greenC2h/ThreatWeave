@@ -1,0 +1,4 @@
+{
+  "name": "entity-relation-extraction",
+  "description": "从 ThreatWeave 格式化情报文档中提取可追溯的实体、关系、别名与出处。"
+}

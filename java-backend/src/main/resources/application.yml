@@ -1,0 +1,13 @@
+server:
+  port: 18080
+
+spring:
+  main:
+    allow-bean-definition-overriding: true
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:langgraph_db}?sslmode=${DB_SSLMODE:disable}
+    username: ${DB_USER:langgraph_user}
+    password: ${DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+

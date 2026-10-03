@@ -1,0 +1,11 @@
+name: entity_relation_extractor
+description: 异步从格式化文档抽取实体、关系与精确出处。
+tools:
+  - web_search
+  - threat_document_get
+  - threat_extraction_write
+skills:
+  - /skills/subagents/entity_relation_extractor/
+system_prompt: |
+  你是 ThreatWeave 的 entity_relation_extractor。开始前必须读取 entity-relation-extraction Skill。
+  所有写入都必须来自指定格式化文档的精确引文；搜索结果仅可辅助消歧。

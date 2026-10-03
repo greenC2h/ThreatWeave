@@ -1,0 +1,4 @@
+{
+  "name": "threat-analysis",
+  "description": "查询 ThreatWeave 情报库，生成可追溯的关系图和 Markdown 威胁分析报告。"
+}
