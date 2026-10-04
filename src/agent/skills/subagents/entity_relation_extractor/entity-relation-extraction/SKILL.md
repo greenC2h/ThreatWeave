@@ -21,11 +21,14 @@ description: >
 3. 仅在原文明确支撑实体或关系时写入；不因列表共现推导关系。语义角色仅使用 `malicious_infrastructure`、`victim`、`research` 或 `unknown`。
 4. 可使用网络搜索辅助名称消歧或背景理解，但搜索结果不能成为直接写库证据，也不能扩大当前文档的事实范围。
 
-## 3. 校验与写入
+## 3. 校验与输出
 
 1. 先调用 `validate_extraction_evidence`。它返回可写入的候选和拒绝原因；对拒绝项最多修正一次，
    仍不通过则丢弃，不能为了写入而编造出处。
-2. 仅在所有正文块都处理后调用一次 `threat_extraction_write`，传入校验通过的实体和关系。
+2. 仅在所有正文块都处理后，根据输入工作流模式选择唯一出口：
+   - `PREVIEW`：调用一次 `threat_extraction_preview`，传入输入中的一次性 `access_token`、校验通过的实体和关系。绝不调用 `threat_extraction_write`。
+   - `COMMIT` 且输入含 `access_token`：调用一次 `commit_extraction_draft`，不重新抽取或改写草稿。
+   - `COMMIT` 且无 `access_token`：调用一次 `threat_extraction_write`，传入校验通过的实体和关系。
 3. 代码规范化明显格式、校验 schema 和精简引文；模型保留实体、关系与语义角色判断责任。
 
 ## 完成标准

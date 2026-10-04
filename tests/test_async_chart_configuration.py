@@ -46,11 +46,9 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
             self.assertIn(tool_name, instructions)
         self.assertNotIn("update_async_task", instructions + configured_prompts)
         self.assertIn("`start_async_task`", instructions)
-        self.assertIn("intel_ingestion_orchestrator", instructions)
-        self.assertNotIn("intel_ingestor` 只能", instructions)
-        self.assertIn("entity_relation_extractor", instructions)
         self.assertIn("threat_analyst", instructions)
-        self.assertIn("批次回执不包含格式化、入库或实体关系", instructions)
+        self.assertNotIn("intel_ingestion_orchestrator", instructions)
+        self.assertNotIn("entity_relation_extractor", instructions)
 
     def test_registers_the_threatweave_async_graphs(self) -> None:
         """Agent Protocol 配置必须只公开已确认的 ThreatWeave 图。"""
@@ -58,9 +56,11 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         config = json.loads((project_root / "langgraph.json").read_text(encoding="utf-8"))
 
         self.assertEqual(
-            config["graphs"]["intel_ingestor_async"],
-            "./src/agent/subagents/async_entry.py:intel_ingestor_agent",
+            config["graphs"]["threat_analyst_async"],
+            "./src/agent/subagents/async_entry.py:threat_analyst_agent",
         )
+        self.assertNotIn("intel_ingestion_orchestrator_async", config["graphs"])
+        self.assertNotIn("intel_ingestor_async", config["graphs"])
         self.assertNotIn("procurement_analyst_async", config["graphs"])
 
     def test_async_graph_requires_a_shared_sandbox_context(self) -> None:
@@ -71,13 +71,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
 
-        threat_tools = [
-            _configured_tool("threat_document_upsert"),
-            _configured_tool("threat_document_get"),
-            _configured_tool("validate_extraction_evidence"),
-            _configured_tool("threat_extraction_write"),
-            _configured_tool("threat_graph_query"),
-        ]
+        threat_tools = [_configured_tool("threat_graph_query")]
         with (
             patch("agent.subagents.async_registry.load_threatweave_tools", new=AsyncMock(return_value=(
                 [_configured_tool("web_search")], threat_tools,
@@ -85,11 +79,11 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         ):
             spec.loader.exec_module(module)
 
-        self.assertIn("ServerRuntime", str(inspect.signature(module.intel_ingestor_agent)))
+        self.assertIn("ServerRuntime", str(inspect.signature(module.threat_analyst_agent)))
 
         async def verify():
             with self.assertRaisesRegex(RuntimeError, "sandbox_id"):
-                async with module.intel_ingestor_agent(
+                async with module.threat_analyst_agent(
                     _ExecutionRuntime(access_context="threads.create_run", store=None, context={}),
                 ):
                     self.fail("Missing execution context must fail")
@@ -97,7 +91,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
                 module.SandboxSync, "connect",
             ) as connect:
                 for access in ("threads.read", "threads.update", "assistants.read"):
-                    async with module.intel_ingestor_agent(_ReadRuntime(access_context=access, store=None)):
+                    async with module.threat_analyst_agent(_ReadRuntime(access_context=access, store=None)):
                         pass
                 connect.assert_not_called()
 
@@ -110,11 +104,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("test_async_chart_routes", module_path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
-        threat_tools = [
-            _configured_tool("threat_document_upsert"), _configured_tool("threat_document_get"),
-            _configured_tool("validate_extraction_evidence"),
-            _configured_tool("threat_extraction_write"), _configured_tool("threat_graph_query"),
-        ]
+        threat_tools = [_configured_tool("threat_graph_query")]
         with (
             patch("agent.subagents.async_registry.load_threatweave_tools", new=AsyncMock(return_value=(
                 [_configured_tool("web_search")], threat_tools,
@@ -128,12 +118,12 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
             patch.object(module, "CompositeBackend", return_value=MagicMock()) as backend_factory,
             patch.object(module, "create_deep_agent", return_value=MagicMock()) as graph_factory,
         ):
-            module.build_async_subagent_graph("intel_ingestor", SandboxBackendProxy())
+            module.build_async_subagent_graph("threat_analyst", SandboxBackendProxy())
 
         self.assertEqual(backend_factory.call_args.kwargs["routes"], {})
         self.assertEqual(
             [tool.name for tool in graph_factory.call_args.kwargs["tools"]],
-            ["threat_document_upsert", "submit_entity_extraction"],
+            ["web_search", "threat_graph_query", "generate_network_graph_html", "build_threat_graph_html"],
         )
         self.assertEqual(
             type(graph_factory.call_args.kwargs["middleware"][0]).__name__,
@@ -174,11 +164,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         module_path = Path(__file__).resolve().parents[1] / "src/agent/subagents/async_entry.py"
         spec = importlib.util.spec_from_file_location("test_async_chart_lifetime", module_path)
         module = importlib.util.module_from_spec(spec)
-        threat_tools = [
-            _configured_tool("threat_document_upsert"), _configured_tool("threat_document_get"),
-            _configured_tool("validate_extraction_evidence"),
-            _configured_tool("threat_extraction_write"), _configured_tool("threat_graph_query"),
-        ]
+        threat_tools = [_configured_tool("threat_graph_query")]
         with (
             patch("agent.subagents.async_registry.load_threatweave_tools", new=AsyncMock(return_value=(
                 [_configured_tool("web_search")], threat_tools,
@@ -191,11 +177,11 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
             with patch.object(module, "OPEN_SANDBOX_API_KEY", "test"), patch.object(
                 module.SandboxSync, "connect", return_value=sandbox,
             ) as connect:
-                async with module.intel_ingestor_agent(
+                async with module.threat_analyst_agent(
                     _ReadRuntime(access_context="threads.read", store=None),
                 ) as readonly:
                     connect.assert_not_called()
-                    async with module.intel_ingestor_agent(_ExecutionRuntime(
+                    async with module.threat_analyst_agent(_ExecutionRuntime(
                         access_context="threads.create_run", store=None, context={"sandbox_id": "sandbox"},
                     )) as execution:
                         self.assertEqual(set(readonly.nodes), set(execution.nodes))
@@ -208,7 +194,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
                 sandbox.reset_mock()
                 with patch.object(module, "build_async_subagent_graph", side_effect=RuntimeError("compile failed")):
                     with self.assertRaisesRegex(RuntimeError, "compile failed"):
-                        async with module.intel_ingestor_agent(_ExecutionRuntime(
+                        async with module.threat_analyst_agent(_ExecutionRuntime(
                             access_context="threads.create_run", store=None, context={"sandbox_id": "sandbox"},
                         )):
                             pass

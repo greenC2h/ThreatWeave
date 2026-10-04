@@ -2,12 +2,6 @@
   "$schema": "https://langgra.ph/schema.json",
   "dependencies": ["."],
   "graphs": {
-    "intel_ingestion_orchestrator_async": "./src/agent/subagents/async_entry.py:intel_ingestion_orchestrator_agent",
-    "intel_ingestion_orchestrator_system": "./src/agent/subagents/async_entry.py:intel_ingestion_orchestrator_system_agent",
-    "intel_ingestor_async": "./src/agent/subagents/async_entry.py:intel_ingestor_agent",
-    "intel_ingestor_system": "./src/agent/subagents/async_entry.py:intel_ingestor_system_agent",
-    "entity_relation_extractor_system": "./src/agent/subagents/async_entry.py:entity_relation_extractor_system_agent",
-    "entity_relation_extractor_async": "./src/agent/subagents/async_entry.py:entity_relation_extractor_agent",
     "threat_analyst_async": "./src/agent/subagents/async_entry.py:threat_analyst_agent"
   },
   "env": ".env"

@@ -32,6 +32,11 @@ public class ThreatWeaveController {
         return Result.success(service.getDocument(documentId));
     }
 
+    @GetMapping("/documents/by-key")
+    public Result<?> getDocumentByKey(@RequestParam String docKey) {
+        return Result.success(service.getDocumentByKey(docKey));
+    }
+
     @PostMapping("/extractions")
     public Result<?> writeExtraction(@Valid @RequestBody ThreatWeaveRequests.ExtractionWriteRequest request) {
         return Result.success(service.writeExtraction(request));

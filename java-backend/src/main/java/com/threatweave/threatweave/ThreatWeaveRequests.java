@@ -4,7 +4,6 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import java.util.List;
 
@@ -13,7 +12,7 @@ public final class ThreatWeaveRequests {
     private ThreatWeaveRequests() { }
 
     public record DocumentUpsertRequest(
-            @NotBlank String docKey, @NotBlank String sourceName, String externalId,
+            @NotBlank String docKey, @NotBlank String sourceId, @NotBlank String sourceName, String externalId,
             String title, String url, String publishedAt, @NotBlank String content,
             @NotBlank String contentSha256) { }
 
@@ -33,6 +32,6 @@ public final class ThreatWeaveRequests {
             @NotBlank String extractor, @Min(0) @Max(100) Integer confidence) { }
 
     public record ExtractionWriteRequest(
-            @NotNull Long documentId, @NotEmpty @Valid List<EntityInput> entities,
+            @NotNull Long documentId, @NotNull @Valid List<EntityInput> entities,
             @Valid List<RelationInput> relations) { }
 }

@@ -1,10 +1,10 @@
-"""intel_ingestion_orchestrator 的批次边界测试。"""
+"""情报处理工作流的 A 输入批次边界测试。"""
 
 from __future__ import annotations
 
 import unittest
 
-from intel_ingestor.orchestrator import OrchestrationReport, split_document_batches
+from intel_ingestor.orchestrator import split_document_batches
 from intel_ingestor.schema import CollectedDocument
 
 
@@ -29,12 +29,6 @@ class BatchSplitTests(unittest.TestCase):
     def test_oversized_document_is_kept_as_one_complete_batch(self) -> None:
         batches = split_document_batches([make_document(0, 100)], max_characters=10)
         self.assertEqual([[document.doc_key for document in batch] for batch in batches], [["key-0"]])
-
-    def test_summary_does_not_claim_async_downstream_completion(self) -> None:
-        summary = OrchestrationReport("source", 1, 1, ()).to_summary()
-        self.assertIn("已将 1 篇文章提交", summary)
-        self.assertIn("不提供文档 ID 或最终写入状态", summary)
-
 
 if __name__ == "__main__":
     unittest.main()

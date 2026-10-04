@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
-from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.backends import CompositeBackend
 from langgraph_sdk.runtime import ServerRuntime
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.sync import SandboxSync
@@ -32,7 +31,6 @@ from agent.middlewares.agent_protection import build_agent_protection_middleware
 from agent.middlewares.skills_sync import SandboxSkillsMiddleware
 from agent.backends.open_sandbox import OpenSandboxBackend
 from agent.backends.sandbox_proxy import SandboxBackendProxy
-from agent.tools.intel_orchestrator_tools import configure_system_formatter_factory
 from agent.subagents.loader import load_subagent
 
 
@@ -45,31 +43,23 @@ async def _load_subagent_config(name: str) -> dict[str, Any]:
     )
 
 
-def build_async_subagent_graph(name: str, sandbox_backend: SandboxBackendProxy | None) -> Any:
+def build_async_subagent_graph(name: str, sandbox_backend: SandboxBackendProxy) -> Any:
     """
     用相同后端类型构建执行和只读图，保持节点、工具及状态拓扑一致。
     """
     registration = get_async_subagent_registration(name)
     subagent_config = _SUBAGENT_CONFIGS[name]
 
-    if sandbox_backend is None:
-        # 调度任务是系统任务，没有用户沙箱；只读映射项目维护的 Skill，临时状态留在内存。
-        backend = CompositeBackend(
-            default=StateBackend(),
-            routes={"/skills/": FilesystemBackend(root_dir=SKILLS_ROOT, virtual_mode=True)},
-        )
-        skill_middleware = SkillsMiddleware(backend=backend, sources=subagent_config.get("skills", []))
-    else:
-        backend = CompositeBackend(default=sandbox_backend, routes={})
-        skill_synchronizer = SandboxSkillSynchronizer(
-            SKILLS_ROOT,
-            Path(__file__).parent.parent / "memory" / "AGENTS.md",
-        )
-        skill_middleware = SandboxSkillsMiddleware(
-            backend=backend,
-            sources=subagent_config.get("skills", []),
-            synchronizer=skill_synchronizer,
-        )
+    backend = CompositeBackend(default=sandbox_backend, routes={})
+    skill_synchronizer = SandboxSkillSynchronizer(
+        SKILLS_ROOT,
+        Path(__file__).parent.parent / "memory" / "AGENTS.md",
+    )
+    skill_middleware = SandboxSkillsMiddleware(
+        backend=backend,
+        sources=subagent_config.get("skills", []),
+        synchronizer=skill_synchronizer,
+    )
     return create_deep_agent(
         model=MAIN_MODEL,
         system_prompt=subagent_config["system_prompt"],
@@ -137,52 +127,10 @@ async def _sandbox_subagent_agent(name: str, runtime: ServerRuntime) -> AsyncIte
 
 
 @asynccontextmanager
-async def intel_ingestor_agent(runtime: ServerRuntime) -> AsyncIterator[Any]:
-    """承载由系统调度器或受控流程提交的异步采集 Agent。"""
-    async with _sandbox_subagent_agent("intel_ingestor", runtime) as graph:
-        yield graph
-
-
-@asynccontextmanager
-async def entity_relation_extractor_agent(runtime: ServerRuntime) -> AsyncIterator[Any]:
-    """承载文档后继的异步实体关系抽取 Agent。"""
-    async with _sandbox_subagent_agent("entity_relation_extractor", runtime) as graph:
-        yield graph
-
-
-@asynccontextmanager
 async def threat_analyst_agent(runtime: ServerRuntime) -> AsyncIterator[Any]:
     """承载只读 ThreatWeave 异步分析 Agent。"""
     async with _sandbox_subagent_agent("threat_analyst", runtime) as graph:
         yield graph
-
-
-@asynccontextmanager
-async def intel_ingestor_system_agent(runtime: ServerRuntime) -> AsyncIterator[Any]:
-    """供无用户沙箱的系统调度器使用的采集图。"""
-    del runtime
-    yield build_async_subagent_graph("intel_ingestor", None)
-
-
-@asynccontextmanager
-async def intel_ingestion_orchestrator_agent(runtime: ServerRuntime) -> AsyncIterator[Any]:
-    """承载由主 Agent 提交的按批次情报采集编排任务。"""
-    async with _sandbox_subagent_agent("intel_ingestion_orchestrator", runtime) as graph:
-        yield graph
-
-
-@asynccontextmanager
-async def intel_ingestion_orchestrator_system_agent(runtime: ServerRuntime) -> AsyncIterator[Any]:
-    """承载系统调度器提交的无用户沙箱批次编排任务。"""
-    del runtime
-    yield build_async_subagent_graph("intel_ingestion_orchestrator", None)
-
-
-@asynccontextmanager
-async def entity_relation_extractor_system_agent(runtime: ServerRuntime) -> AsyncIterator[Any]:
-    """供采集流水线后继任务使用的无用户沙箱抽取图。"""
-    del runtime
-    yield build_async_subagent_graph("entity_relation_extractor", None)
 
 
 try:
@@ -190,14 +138,9 @@ try:
     # 预加载，避免工厂内嵌套 asyncio.run() 使每个后台任务立刻失败。
     _SUBAGENT_CONFIGS = {
         name: asyncio.run(_load_subagent_config(name))
-        for name in ("intel_ingestion_orchestrator", "intel_ingestor", "entity_relation_extractor", "threat_analyst")
+        for name in ("threat_analyst",)
     }
 except RuntimeError as exc:
     raise RuntimeError(
         "无法加载异步子 Agent 的工具。请确认其依赖的 MCP 服务可访问后再启动 Agent Protocol 服务。"
     ) from exc
-
-
-# 编排器运行期间只通过该工厂创建新的系统 A 图。不要在工具执行时再导入本模块，
-# 否则 Agent Protocol 的运行中事件循环会遇到未等待的异步工具加载协程。
-configure_system_formatter_factory(lambda: build_async_subagent_graph("intel_ingestor", None))

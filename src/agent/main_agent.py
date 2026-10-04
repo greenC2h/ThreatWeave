@@ -22,6 +22,7 @@ from agent.subagents.async_registry import (
     get_async_subagent_instructions,
     get_async_subagent_specs,
 )
+from agent.subagents.loader import load_subagent
 from agent.backends.sandbox_proxy import SandboxBackendProxy
 from agent.backends.skill_sync import SandboxSkillSynchronizer
 from agent.memory.prompts import system_prompt
@@ -41,6 +42,7 @@ from agent.tools.hitl_tools import request_additional_info
 from agent.tools.mcp_client import load_common_tools
 from agent.tools.skill_tools import create_skill_management_tools
 from agent.tools.async_sandbox_tools import create_async_sandbox_tools
+from agent.tools.intelligence_workflow_tools import create_intelligence_workflow_tools
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.middlewares.skill_management_visibility import (
     SkillManagementVisibilityMiddleware,
@@ -107,6 +109,11 @@ async def create_main_agent(
     )
 
     common_tools = await load_common_tools()
+    workflow_subagent = load_subagent(
+        Path(__file__).parent / "subagents" / "configs" / "intelligence_workflow_orchestrator.yaml",
+        available_tools=(),
+        local_tools=create_intelligence_workflow_tools(user_id, sandbox_backend),
+    )
 
     # 异步子 Agent 的图不嵌入主图。
     # 主 Agent 可提交、查询、列举和取消当前会话的异步任务；远端任务完成后，
@@ -129,7 +136,7 @@ async def create_main_agent(
     )
 
     # 主 Agent 可用：公共网络搜索、异步任务提交和通用信息补齐。情报文档、实体关系及
-    # 图谱数据访问仅由相应的异步子 Agent 获得；信息补齐可发生在任何任务开始前。
+    # 图谱数据访问仅由同步编排子 Agent 或相应异步子 Agent 获得。
     # 未显式传入 general-purpose 时，DeepAgents 自动装配其默认通用子 Agent，并按框架规则
     # 继承 main_tools，不在本项目覆盖其配置。
     main_tools = [*common_tools, *async_sandbox_tools, request_additional_info]
@@ -142,9 +149,8 @@ async def create_main_agent(
         system_prompt=f"{system_prompt}\n{get_async_subagent_instructions()}",
         memory=[AGENTS_MD_FILENAME],
         tools=main_tools,
-        # 省略 general-purpose，保留 DeepAgents 的默认配置；ThreatWeave 业务任务仅通过
-        # AsyncSubAgentMiddleware 注册的独立异步图执行。
-        subagents=async_subagents,
+        # 编排器作为本地同步子 Agent，C 等仍通过 AsyncSubAgentMiddleware 独立执行。
+        subagents=[workflow_subagent, *async_subagents],
         middleware=[
             # 将运行上下文中的用户身份与记忆路径加入模型可见的系统上下文。
             ContextInjectionMiddleware(),

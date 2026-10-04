@@ -5,9 +5,9 @@
 处理 ThreatWeave 实体、关系、证据、调度或 PostgreSQL 业务表前，必须读取
 `doc/THREATWEAVE_CONFIRMED_DECISIONS.md`。该文件是当前业务边界与数据模型的唯一权威来源。
 
-- 定期采集或用户指定已批准来源文章时，主 Agent 只提交 `intel_ingestion_orchestrator`；它按上下文预算分批调用 `intel_ingestor`。
-- `intel_ingestor` 只处理编排器交给它的一批文章草稿，深度格式化并保存正文。
-- `entity_relation_extractor` 只处理成功写入的格式化文档；每次写入必须有正文中的精确出处。
+- 用户文章处理由同步 `intelligence_workflow_orchestrator` 完成：它根据模式确定性地调用 A、B 并等待完整结果；A 与 B 不直接互相提交任务。
+- `intel_ingestor` 只处理工作流交给它的一批文章草稿，深度格式化并保存正文。
+- `entity_relation_extractor` 只处理工作流指定的格式化文档；每次写入必须有正文中的精确出处。`PREVIEW` 只保存用户草稿，`COMMIT` 才写图谱。
 - 需要关联、图谱或报告时，使用 `start_async_task` 提交 `threat_analyst`。它只读业务库，交付 HTML 图和 Markdown 报告 artifact。
 - 新增、启用或停用情报源必须经过人工确认；不得在普通对话中直接修改来源配置。
 

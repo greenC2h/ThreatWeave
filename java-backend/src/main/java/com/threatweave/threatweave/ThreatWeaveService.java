@@ -8,6 +8,8 @@ public interface ThreatWeaveService {
 
     Map<String, Object> getDocument(long documentId);
 
+    Map<String, Object> getDocumentByKey(String docKey);
+
     Map<String, Object> writeExtraction(ThreatWeaveRequests.ExtractionWriteRequest request);
 
     Map<String, Object> queryGraph(String query, int limit);

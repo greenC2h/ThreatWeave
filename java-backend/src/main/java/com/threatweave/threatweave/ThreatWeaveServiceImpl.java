@@ -25,12 +25,12 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
         boolean hasContentChanged = !existingDocuments.isEmpty()
                 && !request.contentSha256().equals(existingDocuments.get(0).get("content_sha256"));
         jdbcTemplate.update("""
-            INSERT INTO threatweave.documents (doc_key, source_name, external_id, title, url, published_at, content, content_sha256, formatted_at, ingested_at)
-            VALUES (?, ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, now(), now())
-            ON CONFLICT (doc_key) DO UPDATE SET source_name = EXCLUDED.source_name, external_id = EXCLUDED.external_id,
+            INSERT INTO threatweave.documents (doc_key, source_id, source_name, external_id, title, url, published_at, content, content_sha256, formatted_at, ingested_at)
+            VALUES (?, ?, ?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, now(), now())
+            ON CONFLICT (doc_key) DO UPDATE SET source_id = EXCLUDED.source_id, source_name = EXCLUDED.source_name, external_id = EXCLUDED.external_id,
               title = EXCLUDED.title, url = EXCLUDED.url, published_at = EXCLUDED.published_at, content = EXCLUDED.content,
               content_sha256 = EXCLUDED.content_sha256, formatted_at = now(), ingested_at = now()
-            """, request.docKey(), request.sourceName(), request.externalId(), request.title(), request.url(),
+            """, request.docKey(), request.sourceId(), request.sourceName(), request.externalId(), request.title(), request.url(),
             request.publishedAt(), request.content(), request.contentSha256());
         Map<String, Object> document = getDocumentByKey(request.docKey());
         if (hasContentChanged) {
@@ -44,6 +44,16 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
     public Map<String, Object> getDocument(long documentId) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 "SELECT * FROM threatweave.documents WHERE id = ?", documentId);
+        if (rows.isEmpty()) {
+            throw new BusinessException("文档不存在");
+        }
+        return rows.get(0);
+    }
+
+    @Override
+    public Map<String, Object> getDocumentByKey(String docKey) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT * FROM threatweave.documents WHERE doc_key = ?", docKey);
         if (rows.isEmpty()) {
             throw new BusinessException("文档不存在");
         }
@@ -107,10 +117,6 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
             ORDER BY r.updated_at DESC LIMIT ?
             """, term, "%" + term + "%", "%" + term + "%", limit);
         return Map.of("entities", entities, "relations", relations);
-    }
-
-    private Map<String, Object> getDocumentByKey(String docKey) {
-        return jdbcTemplate.queryForMap("SELECT * FROM threatweave.documents WHERE doc_key = ?", docKey);
     }
 
     private long upsertEntity(ThreatWeaveRequests.EntityInput entity) {

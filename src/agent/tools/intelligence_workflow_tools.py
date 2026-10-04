@@ -1,0 +1,83 @@
+"""向同步编排子 Agent 暴露的受控情报工作流工具。"""
+
+from __future__ import annotations
+
+import json
+
+from langchain_core.tools import BaseTool, tool
+
+from agent.backends.sandbox_proxy import SandboxBackendProxy
+from agent.subagents.internal_runner import run_internal_subagent
+from intelligence_workflow.document_gateway import DocumentGateway
+from intelligence_workflow.repository import WorkflowRepository
+from intelligence_workflow.schema import IntelligenceWorkflowMode, IntelligenceWorkflowRequest
+from intelligence_workflow.workflow import IntelligenceWorkflow, WorkflowAgents
+
+
+def create_intelligence_workflow(sandbox_backend: SandboxBackendProxy) -> IntelligenceWorkflow:
+    """构造绑定调用方沙箱的确定性工作流服务。"""
+    return IntelligenceWorkflow(
+        repository=WorkflowRepository(),
+        document_gateway=DocumentGateway(),
+        agents=WorkflowAgents(
+            formatter=lambda instruction: run_internal_subagent(
+                "intel_ingestor", instruction, sandbox_backend
+            ),
+            preview_extractor=lambda instruction: run_internal_subagent(
+                "entity_relation_extractor_preview", instruction, sandbox_backend
+            ),
+            commit_extractor=lambda instruction: run_internal_subagent(
+                "entity_relation_extractor_commit", instruction, sandbox_backend
+            ),
+            draft_commit_extractor=lambda instruction: run_internal_subagent(
+                "entity_relation_extractor_draft_commit", instruction, sandbox_backend
+            ),
+        ),
+    )
+
+
+def create_intelligence_workflow_tools(
+    actor_id: str,
+    sandbox_backend: SandboxBackendProxy,
+) -> list[BaseTool]:
+    """创建绑定身份和沙箱的工具，避免模型伪造用户归属或执行环境。"""
+    @tool
+    async def run_intelligence_workflow(
+        mode: str,
+        source_id: str | None = None,
+        article_url: str | None = None,
+        document_ids: list[int] | None = None,
+        max_articles: int = 3,
+        force_refresh: bool = False,
+    ) -> str:
+        """同步执行指定的情报处理工作流并返回完整的紧凑结果。
+
+        仅可使用 `format_only`、`extract_preview`、`ingest_full`、`extract_pending` 或
+        `list_processing`。来源任务使用 `source_id`，已有文档任务使用 `document_ids`；
+        `extract_pending` 可省略 `source_id` 以处理全部来源。`article_url` 必须属于该来源。
+        工具会等待 A/B 处理完成，不创建可轮询的异步任务。
+        """
+        request = IntelligenceWorkflowRequest(
+            mode=IntelligenceWorkflowMode(mode),
+            actor_id=actor_id,
+            source_id=source_id,
+            article_url=article_url,
+            document_ids=document_ids or [],
+            max_articles=max_articles,
+            force_refresh=force_refresh,
+        )
+        result = await create_intelligence_workflow(sandbox_backend).run(request)
+        return result.model_dump_json()
+
+    @tool
+    async def list_intelligence_processing(source_id: str | None = None) -> str:
+        """列出已格式化、待抽取、失败或已完成的文章状态，不触发任何处理。"""
+        request = IntelligenceWorkflowRequest(
+            mode=IntelligenceWorkflowMode.LIST_PROCESSING,
+            actor_id=actor_id,
+            source_id=source_id,
+        )
+        result = await create_intelligence_workflow(sandbox_backend).run(request)
+        return json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+
+    return [run_intelligence_workflow, list_intelligence_processing]

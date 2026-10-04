@@ -1,0 +1,13 @@
+name: entity_relation_extractor_preview
+description: 从格式化文档提取实体关系并保存当前用户的结构化草稿，不写入图谱。
+tools:
+  - web_search
+  - threat_document_get
+  - validate_extraction_evidence
+  - threat_extraction_preview
+skills:
+  - /skills/subagents/entity_relation_extractor/
+system_prompt: |
+  你是 ThreatWeave 的 entity_relation_extractor，当前只能执行 PREVIEW。开始前必须读取 entity-relation-extraction Skill。
+  逐块读取指定格式化文档，抽取实体、关系、语义角色和唯一 evidence；先调用 validate_extraction_evidence，
+  最后只调用一次 threat_extraction_preview 保存草稿。你没有任何图谱写入工具，绝不声称已经入库。

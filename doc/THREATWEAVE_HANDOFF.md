@@ -1,6 +1,8 @@
-# ThreatWeave 工作交接
+# ThreatWeave 历史交接（已归档）
 
 更新时间：2026-10-03
+
+> 归档说明：本文件以下内容是 2026-10-03 的历史快照，描述的旧异步 A/B 编排、A 自动提交 B 和多个 Agent Protocol 图均已删除。它们不代表“当前实现”，不得用于代码修改、运行、测试或排障。当前实现以 `THREATWEAVE_CONFIRMED_DECISIONS.md`、`INTELLIGENCE_WORKFLOW_REFACTOR_PLAN.md` 和 `PROJECT_DOCUMENTATION.md` 为准。
 
 ## 项目背景与目的
 
@@ -42,7 +44,7 @@ ThreatWeave 只有三个业务子 Agent，全部异步：
 
 实体、语义角色、关系类型及 PostgreSQL DDL 不在本文重复维护，直接以凿定决策为准。
 
-## 当前实现
+## 2026-10-03 历史实现快照（已废弃）
 
 ### 运行链路
 
@@ -86,7 +88,7 @@ Python 必须使用仓库根目录下的 `.venv` uv 环境（旧的 `myagent` �
 - `src/api/identity.py` 为业务端点提供当前身份；聊天、历史和异步任务已使用该边界。
 - 前端已替换为 ThreatWeave 深色控制台主题，入口标题为“ThreatWeave 威胁情报工作台”。
 
-## 已验证的事实
+## 2026-10-03 历史验证记录（不适用于当前链路）
 
 本次清理后的验证结果：
 
@@ -104,7 +106,7 @@ MCP: Agent Protocol 启动时发现 4 个 ThreatWeave MCP 工具
 
 **历史验证（本次职责重构前）**：曾以真实 CNCERT 列表页驱动旧版 `ingest_source`，验证过第 1 页 15 篇文章的确定性清洗与直连入库。该旧链路已移除；当前链路由采集工具把文章草稿交给 A 深度格式化，再由 A 调用 Java MCP 入库，需以新的端到端任务重新验证。
 
-## 当前缺口与风险
+## 2026-10-03 历史缺口与风险（已过期）
 
 这些是后续实现应优先处理的真实缺口，不是可忽略的优化项。
 
@@ -115,7 +117,7 @@ MCP: Agent Protocol 启动时发现 4 个 ThreatWeave MCP 工具
 5. **C 的完整交付未验证。** `OPEN_SANDBOX_API_KEY` 未配置，沙箱预热失败后按需降级。尚未真实验证登录用户提交 C 任务、打开 HTML artifact、下载 Markdown 报告以及只读边界。
 6. **API 级领域校验未完成。** `ThreatWeaveRequests.java` 仅有基础 Bean Validation；实体类型、语义角色和关系类型主要由 PostgreSQL CHECK 约束拒绝。模型传入不支持值时可能得到通用错误，而非清晰业务错误。
 
-## 推荐继续顺序
+## 2026-10-03 历史推荐顺序（已过期）
 
 1. ✅ 为 CNCERT/CC 实现受来源条款和频率约束的、可测试的获取适配器（已完成，见上“本次更新后新增的真实验证”）。
 2. ✅ 在该适配器中实现确定性正文清洗、稳定 `doc_key`、内容 SHA 和文档 upsert（已完成）。
@@ -124,7 +126,7 @@ MCP: Agent Protocol 启动时发现 4 个 ThreatWeave MCP 工具
 5. 配置 OpenSandbox，真实执行 C，并验证 HTML 图、报告下载、事实/推断边界和 C 的只读属性。
 6. 在上述链路稳定后，再实现经确认的主 Agent 来源管理与人工确认；不要先做前端管理台。
 
-## 验收命令
+## 历史验收命令（当前以 AGENTS.md 为准）
 
 ```powershell
 $env:PYTHONPATH = 'src'

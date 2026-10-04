@@ -8,6 +8,7 @@ from typing import Any
 from fastmcp import Context, FastMCP
 
 from mcp_server.http_base import request_threatweave_api
+from intelligence_workflow.repository import WorkflowRepository
 
 
 MAX_DOCUMENT_CHUNK_CHARACTERS = 8_000
@@ -207,31 +208,27 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="threat_document_upsert")
     async def upsert_document(
-        doc_key: str,
-        source_name: str,
+        access_token: str,
         content: str,
-        content_sha256: str | None = None,
-        external_id: str | None = None,
         title: str | None = None,
-        url: str | None = None,
-        published_at: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         """写入或覆盖一份格式化情报文档，仅供 intel_ingestor 使用。
 
-        当调用方未传 ``content_sha256`` 时，MCP 根据最终正文计算它，避免将机械计算
-        交给模型。``doc_key`` 必须来自受控采集工具，以保证同一来源文章可幂等覆盖。
+        工作流签发的一次性授权绑定文档键和来源元数据，模型只提交清洗后的正文，
+        从而不能借由提示注入创建或覆盖其他文章。
         """
-        final_content_sha256 = content_sha256 or _content_sha256(content)
+        grant = await WorkflowRepository().consume_formatting_access_grant(access_token)
         return await request_threatweave_api(_http_client(ctx), "POST", "/threatweave/documents", json={
-            "docKey": doc_key,
-            "sourceName": source_name,
-            "externalId": external_id,
+            "docKey": grant.doc_key,
+            "sourceId": grant.source_id,
+            "sourceName": grant.source_name,
+            "externalId": grant.external_id,
             "title": title,
-            "url": url,
-            "publishedAt": published_at,
+            "url": grant.url,
+            "publishedAt": grant.published_at,
             "content": content,
-            "contentSha256": final_content_sha256,
+            "contentSha256": _content_sha256(content),
         }) or {}
 
     @mcp.tool(name="threat_document_get")
@@ -299,6 +296,85 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
             "relations": validated["relations"],
         }) or {}
         return {**result, "written": True, "rejected": validated["rejected"]}
+
+    @mcp.tool(name="threat_extraction_preview")
+    async def save_extraction_preview(
+        document_id: int,
+        access_token: str,
+        entities: list[dict[str, Any]] | dict[str, Any],
+        relations: list[dict[str, Any]] | dict[str, Any] | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """校验并保存仅抽取草稿，绝不向实体、关系或出处表写入数据。"""
+        repository = WorkflowRepository()
+        grant = await repository.consume_draft_access_grant(access_token, "preview")
+        if grant.document_id != document_id:
+            raise ValueError("草稿访问授权与目标文档不一致")
+        document = await request_threatweave_api(
+            _http_client(ctx), "GET", f"/threatweave/documents/{document_id}"
+        ) or {}
+        content = document.get("content")
+        content_sha256 = document.get("content_sha256")
+        if not isinstance(content, str) or not isinstance(content_sha256, str):
+            raise ValueError("文档正文或正文哈希无效")
+        if content_sha256 != grant.content_sha256:
+            raise ValueError("文档正文已变化，不能保存旧版本抽取草稿")
+        validated = _validate_extraction_candidates(content, entities, relations)
+        draft = await repository.save_draft(
+            user_id=grant.user_id,
+            document_id=document_id,
+            content_sha256=content_sha256,
+            payload={"entities": validated["entities"], "relations": validated["relations"]},
+        )
+        return {
+            "draftId": draft.draft_id,
+            "acceptedEntities": len(validated["entities"]),
+            "acceptedRelations": len(validated["relations"]),
+            "rejected": validated["rejected"],
+        }
+
+    @mcp.tool(name="commit_extraction_draft")
+    async def commit_extraction_draft(
+        access_token: str,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """提交发起用户尚未过期的结构化草稿，不从 Markdown 或模型回复重建数据。"""
+        repository = WorkflowRepository()
+        grant = await repository.consume_draft_access_grant(access_token, "commit")
+        # 令牌由工作流绑定草稿、用户和正文，工具仍验证草稿状态和当前正文哈希。
+        draft = await repository.get_active_draft_by_id(grant.draft_id or "", grant.user_id)
+        if not draft:
+            raise ValueError("抽取草稿不存在、已过期或不属于当前用户")
+        if draft.document_id != grant.document_id or draft.content_sha256 != grant.content_sha256:
+            raise ValueError("草稿访问授权与当前草稿不一致")
+        document = await request_threatweave_api(
+            _http_client(ctx), "GET", f"/threatweave/documents/{draft.document_id}"
+        ) or {}
+        if document.get("content_sha256") != draft.content_sha256:
+            raise ValueError("文档正文已变化，不能提交旧草稿")
+        entities = draft.payload.get("entities", [])
+        relations = draft.payload.get("relations", [])
+        content = document.get("content")
+        if not isinstance(content, str):
+            raise ValueError("文档正文格式无效")
+        # 草稿保存后可能被维护脚本或未来的迁移改写；提交前始终以当前正文重新校验。
+        validated = _validate_extraction_candidates(content, entities, relations)
+        if not validated["entities"] and not validated["relations"]:
+            # Java 的抽取接口要求至少一个实体；空草稿仍代表 B 已完成审阅，只是没有可写事实。
+            await repository.mark_draft_committed(draft.draft_id)
+            return {
+                "written": False,
+                "draftId": draft.draft_id,
+                "reason": "没有可写入的实体或关系",
+                "rejected": validated["rejected"],
+            }
+        result = await request_threatweave_api(_http_client(ctx), "POST", "/threatweave/extractions", json={
+            "documentId": draft.document_id,
+            "entities": validated["entities"],
+            "relations": validated["relations"],
+        }) or {}
+        await repository.mark_draft_committed(draft.draft_id)
+        return {**result, "written": True, "draftId": draft.draft_id, "rejected": validated["rejected"]}
 
     @mcp.tool(name="threat_graph_query")
     async def query_graph(
