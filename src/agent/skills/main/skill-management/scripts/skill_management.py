@@ -35,12 +35,12 @@ def create_skill_management_tools(
     """
     创建沙箱优先的技能管理工具；省略 backend 仅供本地测试和管理兼容。
 
-    Args:
+    参数：
         skills_root: 主 Agent 和子 Agent 技能目录的本地根目录。
         subagent_names: 允许接收技能的子 Agent 名称集合。
         sandbox_backend: 运行时沙箱代理；Agent 调用必须传入以隔离下载和执行。
 
-    Returns:
+    返回：
         供主 Agent 使用的 LangChain 工具列表。
     """
     from langchain_core.tools import tool
@@ -78,7 +78,7 @@ def create_skill_management_tools(
         """
         将技能安装到主 Agent 或分配给一个子 Agent。
 
-        Args:
+        参数：
             skill_name: 已通过 download_skill 下载的技能目录名。
             subagent_name: 目标名称。使用 ``main`` 安装到主 Agent，或填写子 Agent 名称。
         """
@@ -108,7 +108,7 @@ def create_skill_management_tools(
         """
         删除一个已分配给子 Agent 的技能目录及其中全部文件。
 
-        Args:
+        参数：
             skill_name: 要删除的技能目录名。
             subagent_name: 当前持有该技能的子 Agent 名称。
         """

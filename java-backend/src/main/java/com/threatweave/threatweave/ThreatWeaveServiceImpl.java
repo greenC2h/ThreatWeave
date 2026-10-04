@@ -7,7 +7,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** JDBC implementation of the confirmed document, graph and provenance model. */
+/** 使用 JDBC 实现文档、图谱和出处模型。 */
 @Service
 public class ThreatWeaveServiceImpl implements ThreatWeaveService {
     private final JdbcTemplate jdbcTemplate;
@@ -34,8 +34,7 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
             request.publishedAt(), request.content(), request.contentSha256());
         Map<String, Object> document = getDocumentByKey(request.docKey());
         if (hasContentChanged) {
-            // Provenance positions are offsets into the formatted body. Keeping them after
-            // an overwrite would make old evidence falsely point at the new document.
+            // 出处位置是格式化正文中的字符偏移。文档覆盖后保留旧出处会使证据错误地指向新正文。
             jdbcTemplate.update("DELETE FROM threatweave.provenance WHERE document_id = ?", document.get("id"));
         }
         return document;

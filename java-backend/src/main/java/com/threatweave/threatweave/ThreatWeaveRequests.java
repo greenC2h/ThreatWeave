@@ -8,7 +8,7 @@ import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import java.util.List;
 
-/** Request contracts for the ThreatWeave ingestion and extraction boundary. */
+/** 定义 ThreatWeave 采集与抽取边界使用的请求对象。 */
 public final class ThreatWeaveRequests {
     private ThreatWeaveRequests() { }
 

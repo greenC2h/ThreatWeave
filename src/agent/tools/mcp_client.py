@@ -84,14 +84,14 @@ async def _load_tools(
     """
     连接一组 MCP Server 并合并其工具。
 
-    Args:
+    参数：
         server_config: 当前工具组对应的 MCP Server 配置。
         group_name: 用于日志和异常信息的工具组名称。
 
-    Returns:
+    返回：
         当前工具组内全部已发现的 MCP 工具。
 
-    Raises:
+    异常：
         RuntimeError: MCP Server 连接或工具加载失败。
     """
     client = MultiServerMCPClient(server_config)

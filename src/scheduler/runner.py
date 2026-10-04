@@ -1,4 +1,4 @@
-"""Submit approved intelligence sources to the system-owned async ingestor."""
+"""将已批准的情报源提交给系统管理的异步采集 Agent。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ ASYNC_AGENT_URL = os.getenv("MYAGENT_ASYNC_AGENT_PROTOCOL_URL", "http://127.0.0.
 
 
 def load_sources() -> list[dict[str, object]]:
-    """Load the checked-in source registry and reject incomplete scheduler inputs."""
+    """加载仓库中的情报源清单，并拒绝缺少调度字段的配置。"""
     with SOURCE_REGISTRY.open(encoding="utf-8") as source_file:
         source = yaml.safe_load(source_file)
     required = {"source_id", "enabled", "entry_url", "minimum_interval_seconds"}
@@ -33,7 +33,7 @@ def load_sources() -> list[dict[str, object]]:
 
 
 async def submit_source(source: dict[str, object]) -> None:
-    """Create one system-owned Agent Protocol run for a configured source."""
+    """为一个已配置的情报源创建系统所有的 Agent Protocol 运行。"""
     client = get_client(url=ASYNC_AGENT_URL)
     thread = await client.threads.create()
     description = (
@@ -50,7 +50,7 @@ async def submit_source(source: dict[str, object]) -> None:
 
 
 async def run() -> None:
-    """Run a low-frequency, in-process schedule with bounded retry after submission failures."""
+    """运行低频进程内调度，并在提交失败后按固定间隔重试。"""
     next_run: dict[str, float] = {}
     loop = asyncio.get_running_loop()
     while True:
@@ -71,7 +71,7 @@ async def run() -> None:
 
 
 def main() -> None:
-    """Configure the standalone scheduler process logging and event loop."""
+    """配置独立调度进程的日志并启动事件循环。"""
     logging.basicConfig(level=os.getenv("THREATWEAVE_SCHEDULER_LOG_LEVEL", "INFO"))
     asyncio.run(run())
 

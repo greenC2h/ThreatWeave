@@ -21,15 +21,15 @@ def load_subagent(
     """
     同步读取一个 YAML 子 Agent 配置，并绑定配置中声明的工具。
 
-    Args:
+    参数：
         config_path: 子 Agent YAML 配置路径。
         available_tools: 当前运行时可提供的 MCP 或其他工具。
         local_tools: 不来自 MCP、但允许由配置声明的本地工具。
 
-    Returns:
+    返回：
         可直接传给 ``create_deep_agent(subagents=...)`` 的配置字典。
 
-    Raises:
+    异常：
         ValueError: 配置结构无效、工具名称重复或声明的工具不可用。
     """
     path = Path(config_path)

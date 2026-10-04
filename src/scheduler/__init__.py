@@ -1,1 +1,1 @@
-"""ThreatWeave system scheduler package."""
+"""ThreatWeave 系统调度器包。"""

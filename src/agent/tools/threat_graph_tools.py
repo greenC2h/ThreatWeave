@@ -1,4 +1,4 @@
-"""Build self-contained HTML graph content from ThreatWeave query results."""
+"""根据 ThreatWeave 查询结果构建自包含的 HTML 图谱内容。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,13 @@ from typing import Any
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import tool
 
+
 @tool
-def build_threat_graph_html(title: str, entities: list[dict[str, Any]], relations: list[dict[str, Any]]) -> str:
+def build_threat_graph_html(
+    title: str,
+    entities: list[dict[str, Any]],
+    relations: list[dict[str, Any]],
+) -> str:
     """生成图谱 HTML，调用方必须按需用 write_file 写入自己的沙箱交付件。"""
     payload = json.dumps({"entities": entities, "relations": relations}, ensure_ascii=False).replace("</", "<\\/")
     safe_title = html.escape(title)

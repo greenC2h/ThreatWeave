@@ -1,10 +1,8 @@
 package com.threatweave.threatweave;
 
-import com.threatweave.common.exception.BusinessException;
-import java.util.List;
 import java.util.Map;
 
-/** Defines the narrow CRUD surface used by ThreatWeave agents. */
+/** 定义 ThreatWeave Agent 使用的最小 CRUD 服务接口。 */
 public interface ThreatWeaveService {
     Map<String, Object> upsertDocument(ThreatWeaveRequests.DocumentUpsertRequest request);
 

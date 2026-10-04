@@ -5,7 +5,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-/** Creates the confirmed ThreatWeave schema. */
+/** 创建 ThreatWeave 业务所需的数据库结构。 */
 @Component
 public class ThreatWeaveSchemaInitializer implements ApplicationRunner {
     private final JdbcTemplate jdbcTemplate;

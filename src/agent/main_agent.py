@@ -10,6 +10,7 @@
 
 import os
 from pathlib import Path
+
 from deepagents import create_deep_agent
 from deepagents.backends import (
     CompositeBackend,
@@ -71,13 +72,13 @@ async def create_main_agent(
 ):
     """创建绑定用户身份、持久化资源和共享沙箱的主 Agent 图。
 
-    Args:
+    参数：
         config: 调用配置；``configurable.user_id`` 决定记忆隔离范围。
         store: PostgreSQL 长期记忆与会话索引使用的 Store。
         checkpointer: 按 ``thread_id`` 保存和恢复 LangGraph 执行状态的组件。
         sandbox_backend: 用户级稳定沙箱代理。底层沙箱失效时管理器替换其内部实现，已缓存的 Agent 图无需重建。
 
-    Returns:
+    返回：
         已配置主工具、同步子 Agent、中间件和持久化后端的 DeepAgents 图。
 
     MCP 工具的发现包含异步客户端操作，因此工厂必须保持异步。异步 ThreatWeave

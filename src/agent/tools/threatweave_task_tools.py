@@ -1,4 +1,4 @@
-"""System-owned handoff tools between ThreatWeave pipeline agents."""
+"""ThreatWeave 流水线 Agent 之间使用的系统任务交接工具。"""
 
 from __future__ import annotations
 
