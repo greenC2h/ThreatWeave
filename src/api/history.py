@@ -202,6 +202,7 @@ def serialize_messages(messages: list[Any], user_id: str = "u1") -> list[Message
                     # 主会话中的 source=main 消息承载。
                     tool_message.text = content
                     tool_message.visualization = Visualization(**visualization) if visualization else None
+                    tool_message.deliverables = _deliverables_for_user(message_content, user_id)
                 elif tool_message.role != "delegation":
                     tool_message.text = content
                     tool_message.visualization = Visualization(**visualization) if visualization else None

@@ -13,6 +13,7 @@ from agent.schema import AsyncTaskStatusResponse, AuthResponse
 from api.agent_loader import agent_loader
 from api.auth import get_current_user
 from api.message_utils import content_to_text, extract_visualization
+from services.deliverables import extract_deliverable_specs
 
 
 router = APIRouter()
@@ -140,11 +141,23 @@ def _run_limit_error(content: str) -> str | None:
 
 
 def _extract_deliverables(content: str) -> list[dict[str, str]]:
-    """读取异步 Agent 的交付协议，并拒绝任何未受控的沙箱路径。"""
+    """兼容旧任务的文本交付协议。"""
     return [
         {"path": path, "mime_type": mime_type, "label": label.strip()}
         for path, mime_type, label in DELIVERABLE_LINE_PATTERN.findall(content)
     ]
+
+
+def _extract_task_deliverables(values: Any, content: str) -> list[dict[str, str]]:
+    """优先读取实际写入工具结果，兼容旧 Agent 的最终文本声明。"""
+    specifications: list[dict[str, str]] = []
+    if isinstance(values, dict) and isinstance(values.get("messages"), list):
+        for message in values["messages"]:
+            if _get_attr(message, "name") == "write_deliverable":
+                specifications.extend(extract_deliverable_specs(_get_attr(message, "content", "")))
+    if not specifications:
+        specifications = _extract_deliverables(content)
+    return list({item["path"]: item for item in specifications}.values())
 
 
 def _sanitize_task_content(content: str) -> str:
@@ -192,7 +205,7 @@ async def get_async_task_status(
         values = _get_attr(state, "values", {})
         content, visualization = _extract_task_output(values)
         report_requested = _task_requests_report(values)
-        deliverable_specs = _extract_deliverables(content)
+        deliverable_specs = _extract_task_deliverables(values, content)
         content = _sanitize_task_content(content)
     except Exception as exc:
         # run 成功不代表已读到结果；失败必须可重试，不能写入占位成功消息。

@@ -12,9 +12,14 @@ from intelligence_workflow.document_gateway import DocumentGateway
 from intelligence_workflow.repository import WorkflowRepository
 from intelligence_workflow.schema import IntelligenceWorkflowMode, IntelligenceWorkflowRequest
 from intelligence_workflow.workflow import IntelligenceWorkflow, WorkflowAgents
+from intel_ingestor.sources import resolve_source_for_article
+from services.deliverables import DeliverableRegistry
 
 
-def create_intelligence_workflow(sandbox_backend: SandboxBackendProxy) -> IntelligenceWorkflow:
+def create_intelligence_workflow(
+    sandbox_backend: SandboxBackendProxy,
+    deliverable_registry: DeliverableRegistry | None = None,
+) -> IntelligenceWorkflow:
     """构造绑定调用方沙箱的确定性工作流服务。"""
     return IntelligenceWorkflow(
         repository=WorkflowRepository(),
@@ -33,12 +38,14 @@ def create_intelligence_workflow(sandbox_backend: SandboxBackendProxy) -> Intell
                 "entity_relation_extractor_draft_commit", instruction, sandbox_backend
             ),
         ),
+        deliverable_registry=deliverable_registry,
     )
 
 
 def create_intelligence_workflow_tools(
     actor_id: str,
     sandbox_backend: SandboxBackendProxy,
+    deliverable_registry: DeliverableRegistry,
 ) -> list[BaseTool]:
     """创建绑定身份和沙箱的工具，避免模型伪造用户归属或执行环境。"""
     @tool
@@ -49,24 +56,37 @@ def create_intelligence_workflow_tools(
         document_ids: list[int] | None = None,
         max_articles: int = 3,
         force_refresh: bool = False,
+        requested_deliverables: list[str] | None = None,
     ) -> str:
         """同步执行指定的情报处理工作流并返回完整的紧凑结果。
 
         仅可使用 `format_only`、`extract_preview`、`ingest_full`、`extract_pending` 或
         `list_processing`。来源任务使用 `source_id`，已有文档任务使用 `document_ids`；
         `extract_pending` 可省略 `source_id` 以处理全部来源。`article_url` 必须属于该来源。
+        可选交付类型为 `formatted_markdown` 与 `extraction_markdown`，仅用户明确要求下载时传入。
+        只提供文章 URL 时，工具会从已启用来源清单中解析唯一 source_id。
         工具会等待 A/B 处理完成，不创建可轮询的异步任务。
         """
+        # 模型有时会把用户提供的 URL 填入 source_id；在工具边界修正参数归位，
+        # 防止未经来源校验的 URL 进入采集器。
+        if source_id and source_id.lower().startswith(("http://", "https://")):
+            if article_url and article_url != source_id:
+                raise ValueError("source_id 与 article_url 不能同时携带不同 URL")
+            article_url, source_id = source_id, None
+        resolved_source_id = source_id
+        if article_url and not resolved_source_id:
+            resolved_source_id = resolve_source_for_article(article_url)
         request = IntelligenceWorkflowRequest(
             mode=IntelligenceWorkflowMode(mode),
             actor_id=actor_id,
-            source_id=source_id,
+            source_id=resolved_source_id,
             article_url=article_url,
             document_ids=document_ids or [],
             max_articles=max_articles,
             force_refresh=force_refresh,
+            requested_deliverables=requested_deliverables or [],
         )
-        result = await create_intelligence_workflow(sandbox_backend).run(request)
+        result = await create_intelligence_workflow(sandbox_backend, deliverable_registry).run(request)
         return result.model_dump_json()
 
     @tool
@@ -77,7 +97,7 @@ def create_intelligence_workflow_tools(
             actor_id=actor_id,
             source_id=source_id,
         )
-        result = await create_intelligence_workflow(sandbox_backend).run(request)
+        result = await create_intelligence_workflow(sandbox_backend, deliverable_registry).run(request)
         return json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
 
     return [run_intelligence_workflow, list_intelligence_processing]

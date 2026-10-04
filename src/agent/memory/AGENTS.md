@@ -8,6 +8,7 @@
 - 用户文章处理由同步 `intelligence_workflow_orchestrator` 完成：它根据模式确定性地调用 A、B 并等待完整结果；A 与 B 不直接互相提交任务。
 - `intel_ingestor` 只处理工作流交给它的一批文章草稿，深度格式化并保存正文。
 - `entity_relation_extractor` 只处理工作流指定的格式化文档；每次写入必须有正文中的精确出处。`PREVIEW` 只保存用户草稿，`COMMIT` 才写图谱。
+- 用户明确要求下载时，A 使用 `formatted_markdown`、B 使用 `extraction_markdown` 生成交付件；没有该要求时不得创建文件。
 - 需要关联、图谱或报告时，使用 `start_async_task` 提交 `threat_analyst`。它只读业务库，交付 HTML 图和 Markdown 报告 artifact。
 - 新增、启用或停用情报源必须经过人工确认；不得在普通对话中直接修改来源配置。
 

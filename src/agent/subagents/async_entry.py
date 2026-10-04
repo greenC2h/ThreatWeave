@@ -10,6 +10,7 @@ from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
+from langchain_core.tools import tool
 from langgraph_sdk.runtime import ServerRuntime
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.sync import SandboxSync
@@ -32,7 +33,13 @@ from agent.middlewares.skills_sync import SandboxSkillsMiddleware
 from agent.backends.open_sandbox import OpenSandboxBackend
 from agent.backends.sandbox_proxy import SandboxBackendProxy
 from agent.subagents.loader import load_subagent
+from services.deliverables import create_write_deliverable_tool
 
+
+@tool("write_deliverable")
+def write_deliverable_placeholder() -> str:
+    """仅用于异步图启动前校验 YAML 工具声明。"""
+    raise RuntimeError("write_deliverable 只能在连接用户沙箱的运行图中使用")
 
 async def _load_subagent_config(name: str) -> dict[str, Any]:
     """加载指定异步子 Agent 的 YAML 配置和独立工具。"""
@@ -40,6 +47,7 @@ async def _load_subagent_config(name: str) -> dict[str, Any]:
     return load_subagent(
         registration.config_path,
         await registration.tool_loader(),
+        local_tools=[write_deliverable_placeholder],
     )
 
 
@@ -48,7 +56,15 @@ def build_async_subagent_graph(name: str, sandbox_backend: SandboxBackendProxy) 
     用相同后端类型构建执行和只读图，保持节点、工具及状态拓扑一致。
     """
     registration = get_async_subagent_registration(name)
-    subagent_config = _SUBAGENT_CONFIGS[name]
+    base_config = _SUBAGENT_CONFIGS[name]
+    subagent_config = {
+        **base_config,
+        "tools": [
+            create_write_deliverable_tool(sandbox_backend)
+            if configured_tool.name == "write_deliverable" else configured_tool
+            for configured_tool in base_config["tools"]
+        ],
+    }
 
     backend = CompositeBackend(default=sandbox_backend, routes={})
     skill_synchronizer = SandboxSkillSynchronizer(

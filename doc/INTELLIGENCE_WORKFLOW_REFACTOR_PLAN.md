@@ -191,7 +191,7 @@ status, created_at, expires_at
 | 已完成 | A/B 配置与 Skill | A 已移除自动串联；B 已增加 PREVIEW、草稿提交和 COMMIT 约束。 |
 | 已完成 | Java Controller/Service/DTO | 已增加按 `doc_key` 解析规范文档的受控查询接口。 |
 | 已完成 | `src/mcp_server/tools/` | 已提供预览草稿保存和草稿提交工具。 |
-| 待开始 | 统一 `write_deliverable` 工具及下载登记适配 | C 保持现有下载协议；A/B 的用户明确报告请求尚未统一接入 artifact 交付。 |
+| 已完成 | 统一 `write_deliverable` 工具及下载登记适配 | A/B/C 共用受控写入、沙箱路径校验、用户归属登记与既有下载接口；旧 C 文本交付行仅保留给历史任务兼容。 |
 | 不适用 | `src/api/async_tasks.py` | 工作流改为同步子 Agent，不进入异步任务查询契约；原有异步任务接口未改动。 |
 | 待开始 | `frontend/` | 现有聊天入口已可调用工作流；任务页状态展示属于独立 UI 增强。 |
 | 已完成 | `doc/THREATWEAVE_CONFIRMED_DECISIONS.md` | 本轮实现后同步新的工作流和状态存储边界。 |

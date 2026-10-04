@@ -24,7 +24,7 @@ from api.auth import get_current_user, router as auth_router
 from api.history import router as history_router
 from api.identity import bind_chat_identity, bind_resume_identity
 from api.message_utils import (
-    content_to_text, extract_visualization, make_session_title,
+    content_to_text, extract_sandbox_deliverables, extract_visualization, make_session_title,
     serialize_interrupt as _serialize_interrupt,
 )
 from services.visualization_artifacts import (
@@ -558,6 +558,17 @@ async def _stream_response_unlocked(
                 tool_status = "error" if getattr(token, "status", None) == "error" else "done"
                 result_text = content_to_text(getattr(token, "content", ""))
                 visualization = extract_visualization(getattr(token, "content", ""))
+                deliverables = [
+                    {
+                        **deliverable,
+                        "download_src": f"/deliverables/{deliverable['artifact_id']}?user_id={request.user_id}",
+                        "preview_src": (
+                            f"/deliverables/{deliverable['artifact_id']}?user_id={request.user_id}&preview=1"
+                            if deliverable["mime_type"] == "text/html" else None
+                        ),
+                    }
+                    for deliverable in extract_sandbox_deliverables(getattr(token, "content", ""))
+                ]
                 pending_tool_ids.discard(tool_call_id)
                 if tool_name == "start_async_task" and tool_status != "error":
                     task_id = extract_async_task_id(getattr(token, "content", ""))
@@ -579,6 +590,8 @@ async def _stream_response_unlocked(
                 }
                 if visualization:
                     result_event["visualization"] = visualization
+                if deliverables:
+                    result_event["deliverables"] = deliverables
                 subagent_name = tool_subagent_names.get(tool_call_id)
                 if subagent_name:
                     result_event["subagent_name"] = subagent_name

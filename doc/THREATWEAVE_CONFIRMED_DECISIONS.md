@@ -23,7 +23,7 @@ ThreatWeave 当前确认三个业务 Agent。主 Agent 只负责理解用户请�
 - `entity_relation_extractor` 只写入原文明示的关系，不根据实体共现推断关系；语义角色限定为 `malicious_infrastructure`、`victim`、`research` 和 `unknown`。它可使用网络搜索辅助名称消歧或补充背景，但搜索结果不是直接写库证据，也不得扩大当前文档的事实范围。
 - `threat_analyst` 的数据库访问为只读。它使用 Skill 约束查询顺序、证据分级、图谱裁剪和报告结构；网络搜索仅作外部背景补充，并在报告中与库内证据和分析推断明确区分。用户可分别要求 Markdown 报告、一个或多个 HTML 图谱，或同时要求二者；它们是可清理的交付 artifact，不反向改变情报库。
 - 定期采集以及用户明确要求“提取并入库”时，使用生产流水线：工作流调用 A 格式化并写入规范文档，再调用 B 抽取并写入实体、关系和出处。用户只要求“抽取这篇文章的实体和关系”时，使用预览流水线：A 必要时格式化后交给 B 生成结构化抽取草稿，不写入 ThreatWeave 业务表。用户后续要求将该结果入库时，复用同一草稿；草稿已过期或对应文章内容变化时必须重新抽取。A 与 B 不直接相互提交任务。
-- Markdown 或 HTML 文件是用户明确要求“报告、导出或下载”时才生成的交付件，任何 Agent 都不得在定期任务或普通抽取完成后自动生成。交付件保存在发起用户的沙箱中，由统一的受控下载入口登记和定期清理；仅抽取草稿使用 PostgreSQL `workflow.extraction_drafts` 中按用户、正文哈希隔离的结构化 JSON，不从 Markdown 反解析业务数据。
+- Markdown、HTML 或 JSON 文件是用户明确要求“报告、导出或下载”时才生成的交付件，任何 Agent 都不得在定期任务或普通抽取完成后自动生成。A、B、C 必须使用统一的 `write_deliverable` 工具；该工具校验文件名、MIME、体积和 `/deliverables/` 路径，后端再将真实工具结果登记为发起用户可下载的 artifact。交付件保存在发起用户的沙箱中并定期清理；仅抽取草稿使用 PostgreSQL `workflow.extraction_drafts` 中按用户、正文哈希隔离的结构化 JSON，不从 Markdown 反解析业务数据。
 - `intel_ingestor`、`entity_relation_extractor` 和 `threat_analyst` 均需要各自独立的 Skill。仓库 `src/agent/skills/` 仅是受版本控制的同步源，任何 Agent 实际执行时都只能从其沙箱的 `/skills/` 副本读取 Skill，不允许映射或直接读取宿主技能目录。
 - 所有 Agent 文件操作均在 OpenSandbox 内完成。用户请求中的主 Agent、A、B、C 共享该用户的持久化沙箱；定期调度使用固定的 `system-scheduler` 专用沙箱，不借用任何用户的沙箱、会话或记忆。A/B 的业务持久化仍经受控 Java MCP 写入 PostgreSQL，不能把文章正文当作沙箱业务文件保存。
 - `start_web.py` 托管独立的调度器进程。调度器不监听对外端口，入口为 `src/scheduler/runner.py`，直接等待同一 `IntelligenceWorkflow` 的 `ingest_full` 结果；主 Agent 通过本地同步子 Agent 调用相同工作流并等待用户请求完成。工作流不注册为 Agent Protocol 图，也不创建用户可轮询任务。C 和通用异步任务能力继续独立保留。调度任务使用固定的 `system-scheduler` 系统执行上下文和专用沙箱。

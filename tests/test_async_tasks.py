@@ -15,6 +15,7 @@ from api.agent_loader import AgentLoader
 from agent.schema import AsyncTaskBinding
 from api.async_tasks import (
     _extract_deliverables,
+    _extract_task_deliverables,
     _sanitize_task_content,
     extract_async_task_id,
     get_async_task_status,
@@ -231,6 +232,21 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         """下载登记只能接受受控目录、MIME 类型和文件名组成的交付协议。"""
         self.assertEqual(_extract_deliverables(DELIVERABLE_LINE)[0]["path"], "/deliverables/threat-report.md")
         self.assertEqual(_extract_deliverables("DELIVERABLE: /tmp/report.md | text/markdown | 报告"), [])
+
+    def test_prefers_structured_write_deliverable_result(self) -> None:
+        """新 C 交付件从工具结果读取，不依赖模型自由文本。"""
+        values = {"messages": [{
+            "name": "write_deliverable",
+            "content": json.dumps({
+                "type": "deliverable_spec",
+                "path": "/deliverables/report.md",
+                "filename": "report.md",
+                "mime_type": "text/markdown",
+                "label": "分析报告",
+            }),
+        }]}
+        deliverables = _extract_task_deliverables(values, "DELIVERABLE: /tmp/invalid.md | text/markdown | 无效")
+        self.assertEqual(deliverables[0]["path"], "/deliverables/report.md")
 
     def test_report_negation_does_not_turn_chart_only_request_into_report_request(self) -> None:
         from api.async_tasks import _task_requests_report

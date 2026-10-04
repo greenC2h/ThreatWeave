@@ -23,9 +23,9 @@ description: >
 
 ## 3. 交付
 
-1. 用户要求 HTML 图时，优先调用 `generate_network_graph_html`，传入精简的节点名称和有证据的边。Charts MCP 不可用或未返回 HTML 时，调用 `build_threat_graph_html`。再使用 `write_file` 将返回的 HTML 写入 `/deliverables/` 下的安全文件名。一次任务可生成多个 HTML 图，每张图必须对应当前查询结果。
-2. 用户要求 Markdown 报告时，使用 `write_file` 将 Markdown 写入 `/deliverables/` 下的安全文件名。报告包含范围、证据、主要关联、风险判断、限制和下一步建议。
-3. 每个需要交付的文件在最终回复单独保留一行：`DELIVERABLE: /deliverables/文件名 | MIME 类型 | 用户可读标签`。MIME 只能是 `text/markdown`、`text/html` 或 `application/json`。不得输出文件系统路径以外的内部执行信息。
+1. 用户要求 HTML 图时，优先调用 `generate_network_graph_html`，传入精简的节点名称和有证据的边。Charts MCP 不可用或未返回 HTML 时，调用 `build_threat_graph_html`。再使用 `write_deliverable` 写入 HTML 交付件。一次任务可生成多个 HTML 图，每张图必须对应当前查询结果。
+2. 用户要求 Markdown 报告时，使用 `write_deliverable` 写入 Markdown 交付件。报告包含范围、证据、主要关联、风险判断、限制和下一步建议。
+3. `write_deliverable` 只接受受控文件名、正文、MIME 类型和用户可读标签，并返回结构化交付声明。不要直接调用 `write_file` 创建下载件，不要自行拼接下载 URL 或 `DELIVERABLE:` 文本行。
 4. 用户未要求图或文件时，只返回聊天内的分析结果，不生成任何文件。
 
 ## 完成标准

@@ -693,6 +693,7 @@ function streamHandlers() {
         if (message.role !== "delegation") {
           message.result = event.text || "工具未返回文本结果";
           message.visualization = event.visualization || null;
+          message.deliverables = event.deliverables || [];
         } else if (event.tool_name === "task") {
           message.result = event.text || "子 Agent 未返回最终报告";
         }

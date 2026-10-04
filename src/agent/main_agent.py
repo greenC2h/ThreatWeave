@@ -48,6 +48,7 @@ from agent.middlewares.skill_management_visibility import (
     SkillManagementVisibilityMiddleware,
 )
 from agent.middlewares.skills_sync import SandboxSkillsMiddleware
+from services.deliverables import DeliverableRegistry
 
 
 # 异步 ThreatWeave 子 Agent 运行在独立的 Agent Protocol 服务中。
@@ -112,7 +113,11 @@ async def create_main_agent(
     workflow_subagent = load_subagent(
         Path(__file__).parent / "subagents" / "configs" / "intelligence_workflow_orchestrator.yaml",
         available_tools=(),
-        local_tools=create_intelligence_workflow_tools(user_id, sandbox_backend),
+        local_tools=create_intelligence_workflow_tools(
+            user_id,
+            sandbox_backend,
+            DeliverableRegistry(store),
+        ),
     )
 
     # 异步子 Agent 的图不嵌入主图。

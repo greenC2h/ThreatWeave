@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -16,11 +16,13 @@ from intelligence_workflow.schema import (
     IntelligenceWorkflowMode,
     IntelligenceWorkflowRequest,
     IntelligenceWorkflowResult,
+    WorkflowDeliverable,
     WorkflowDocumentResult,
 )
 from intel_ingestor.ingestor import collect_source
 from intel_ingestor.orchestrator import format_batch_instruction, split_document_batches
 from intel_ingestor.schema import CollectedDocument
+from services.deliverables import DeliverableRegistry, extract_deliverable_specs
 
 
 AgentRunner = Callable[[str], Awaitable[object]]
@@ -45,10 +47,12 @@ class IntelligenceWorkflow:
         repository: WorkflowRepository,
         document_gateway: DocumentGateway,
         agents: WorkflowAgents,
+        deliverable_registry: DeliverableRegistry | None = None,
     ) -> None:
         self._repository = repository
         self._document_gateway = document_gateway
         self._agents = agents
+        self._deliverable_registry = deliverable_registry
 
     async def run(self, request: IntelligenceWorkflowRequest) -> IntelligenceWorkflowResult:
         """执行请求并返回不包含正文或模型原始输出的同步处理摘要。"""
@@ -125,8 +129,17 @@ class IntelligenceWorkflow:
                 continue
             try:
                 grants = await self._issue_formatting_grants(runnable)
-                await self._agents.formatter(
-                    format_batch_instruction(request.source_id, batch_number, runnable, grants)
+                agent_result = await self._agents.formatter(
+                    format_batch_instruction(
+                        request.source_id,
+                        batch_number,
+                        runnable,
+                        grants,
+                        request.requested_deliverables,
+                    )
+                )
+                await self._register_agent_deliverables(
+                    request, workflow_id, result, agent_result,
                 )
             except Exception as exc:
                 for document in runnable:
@@ -253,6 +266,7 @@ class IntelligenceWorkflow:
                     document=document,
                     extraction_mode=extraction_mode,
                     access_token=grant.token if grant else None,
+                    requested_deliverables=request.requested_deliverables,
                 ))
                 expected_tool = (
                     "threat_extraction_preview"
@@ -261,6 +275,9 @@ class IntelligenceWorkflow:
                 )
                 if not self._has_successful_tool_result(agent_result, expected_tool):
                     raise RuntimeError(f"B 未调用要求的受控出口: {expected_tool}")
+                await self._register_agent_deliverables(
+                    request, workflow_id, result, agent_result,
+                )
                 if extraction_mode == "COMMIT":
                     await self._repository.mark_extraction_completed(
                         document.doc_key,
@@ -349,12 +366,49 @@ class IntelligenceWorkflow:
             access_tokens[document.doc_key] = grant.token
         return access_tokens
 
+    async def _register_agent_deliverables(
+        self,
+        request: IntelligenceWorkflowRequest,
+        workflow_id: str,
+        result: IntelligenceWorkflowResult,
+        agent_result: object,
+    ) -> None:
+        """登记 A/B 实际调用统一交付工具产生的文件，而不信任模型文本声明。"""
+        if (
+            request.actor_id == "system-scheduler"
+            or not request.requested_deliverables
+            or self._deliverable_registry is None
+        ):
+            return
+        messages: Any = agent_result.get("messages", []) if isinstance(agent_result, dict) else []
+        specifications = [
+            specification
+            for message in messages
+            if (message.get("name") if isinstance(message, dict) else getattr(message, "name", None))
+            == "write_deliverable"
+            for specification in extract_deliverable_specs(
+                message.get("content", "") if isinstance(message, dict) else getattr(message, "content", "")
+            )
+        ]
+        registered = await self._deliverable_registry.register(
+            user_id=request.actor_id,
+            delivery_id=workflow_id,
+            specifications=specifications,
+        )
+        result.deliverables.extend(
+            WorkflowDeliverable.model_validate({
+                key: value for key, value in deliverable.items() if key != "type"
+            })
+            for deliverable in registered
+        )
+
     @staticmethod
     def _extraction_instruction(
         *,
         document: CanonicalDocument,
         extraction_mode: str,
         access_token: str | None,
+        requested_deliverables: Sequence[str],
     ) -> str:
         """把确定的 B 模式和文档标识传给模型，不让模型猜测是否允许写库。"""
         return (
@@ -368,6 +422,11 @@ class IntelligenceWorkflow:
                     f"使用 access_token={access_token}，只调用 commit_extraction_draft。"
                     if access_token else "完成校验后只调用一次图谱写入工具。"
                 )
+            )
+            + (
+                "用户明确要求 extraction_markdown；完成当前工作流后，调用一次 write_deliverable "
+                "写入抽取结果 Markdown。"
+                if "extraction_markdown" in requested_deliverables else ""
             )
         )
 

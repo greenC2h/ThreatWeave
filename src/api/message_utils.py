@@ -28,6 +28,15 @@ _ARTIFACT_REFERENCE_PATTERN = re.compile(
     r"(?:artifact_id|artifact-id|资源标识)(?:[\s*_`])*[:：]\s*`?([0-9a-f]{32})`?",
     re.IGNORECASE,
 )
+_TEXT_DELIVERABLE_PATTERN = re.compile(
+    r"(?:文件名|filename)\s*[：:]\s*`?([A-Za-z0-9][A-Za-z0-9_.-]{0,119}\.(?:md|html|json))`?"
+    r".{0,300}?"
+    # 同步 task 的摘要通常先写 sandbox_deliverable，再在括号中写实际 MIME。
+    r"(?:类型|MIME|mime_type)\s*[：:]\s*.{0,160}?(text/markdown|text/html|application/json)"
+    r".{0,300}?"
+    r"(?:artifact_id|artifact-id|资源标识)\s*[：:]\s*`?([0-9a-f]{32})`?",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def content_to_text(content: Any) -> str:
@@ -173,6 +182,10 @@ def _find_visualization(content: Any, depth: int = 0) -> dict[str, str] | None:
     markdown_match = _MARKDOWN_IMAGE_PATTERN.search(stripped)
     if markdown_match:
         return {"kind": "image", "src": markdown_match.group(1), "mime_type": "image/*"}
+    # 同步工作流的 Markdown 交付件可能只剩最终说明文本；其 artifact ID
+    # 属于 `/deliverables/`，不能沿用旧文本协议当作图表资源。
+    if _TEXT_DELIVERABLE_PATTERN.search(stripped):
+        return None
     artifact_match = _ARTIFACT_REFERENCE_PATTERN.search(stripped)
     if artifact_match:
         artifact_id = artifact_match.group(1).lower()
@@ -191,6 +204,19 @@ def extract_visualization(content: Any) -> dict[str, str] | None:
     return _find_visualization(content)
 
 
+def _text_deliverables(content: str) -> list[dict[str, str]]:
+    """兼容同步子 Agent 将结构化交付件压缩进最终说明文本的情况。"""
+    return [
+        {
+            "artifact_id": artifact_id.lower(),
+            "mime_type": mime_type,
+            "filename": filename,
+            "label": filename,
+        }
+        for filename, mime_type, artifact_id in _TEXT_DELIVERABLE_PATTERN.findall(content)
+    ]
+
+
 def _find_sandbox_deliverables(content: Any, depth: int = 0) -> list[dict[str, str]]:
     """递归读取已登记交付件，绝不将沙箱路径暴露给前端。"""
     if depth > 5:
@@ -202,6 +228,8 @@ def _find_sandbox_deliverables(content: Any, depth: int = 0) -> list[dict[str, s
             for item in content
             for deliverable in _find_sandbox_deliverables(item, depth + 1)
         ]
+    if isinstance(content, str):
+        return _text_deliverables(content)
     if not isinstance(content, dict):
         return []
     if content.get("type") == "sandbox_deliverable":

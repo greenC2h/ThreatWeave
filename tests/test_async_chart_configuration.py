@@ -123,7 +123,13 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertEqual(backend_factory.call_args.kwargs["routes"], {})
         self.assertEqual(
             [tool.name for tool in graph_factory.call_args.kwargs["tools"]],
-            ["web_search", "threat_graph_query", "generate_network_graph_html", "build_threat_graph_html"],
+            [
+                "web_search",
+                "threat_graph_query",
+                "generate_network_graph_html",
+                "build_threat_graph_html",
+                "write_deliverable",
+            ],
         )
         self.assertEqual(
             type(graph_factory.call_args.kwargs["middleware"][0]).__name__,
@@ -141,7 +147,8 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertNotIn("threat_extraction_write", config)
         self.assertNotIn("request_additional_info", config)
         self.assertIn("build_threat_graph_html", config)
-        self.assertIn("DELIVERABLE:", config)
+        self.assertIn("write_deliverable", config)
+        self.assertNotIn("DELIVERABLE:", config)
         self.assertIn("threat-analysis Skill", config)
         self.assertIn("威胁", config)
 

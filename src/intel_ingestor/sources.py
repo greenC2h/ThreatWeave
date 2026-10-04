@@ -56,6 +56,22 @@ def list_source_ids() -> list[str]:
     return sorted({data.get("source_id") for _, data in _iter_source_files() if data.get("source_id")})
 
 
+def resolve_source_for_article(article_url: str) -> str:
+    """根据已批准来源的 URL 规则解析一篇文章所属的唯一来源。"""
+    matches: list[str] = []
+    for source_id in list_source_ids():
+        source = load_source(source_id)
+        if not source.enabled:
+            continue
+        if re.match(source.article_url_pattern, article_url):
+            matches.append(source.source_id)
+    if not matches:
+        raise ValueError("文章 URL 不属于任何已启用的已批准情报源")
+    if len(matches) > 1:
+        raise ValueError("文章 URL 同时匹配多个情报源，请明确指定 source_id")
+    return matches[0]
+
+
 def _find_source_path(source_id: str) -> Path | None:
     """按 source_id 定位来源文件：优先 ``<source_id>.yaml``，否则扫描配置文件字段。"""
     direct = _sources_dir() / f"{source_id}.yaml"

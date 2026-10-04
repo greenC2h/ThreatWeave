@@ -11,16 +11,14 @@
 ``thread_id`` 是业务会话 ID，不是操作系统进程 ID。
 会话写操作的互斥仅在单个服务进程内有效，当前只支持单 worker 部署。
 PostgreSQL 提供跨重启持久化；多 worker 部署前必须增加分布式协调。
-用户身份仍是演示客户端声明的 user_id；归属校验不替代登录认证。
+用户身份由 FastAPI 的 Cookie 会话认证后注入；归属校验不能替代登录认证。
 """
 
 from __future__ import annotations
 
 import asyncio
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import HTTPException
@@ -30,6 +28,7 @@ from agent.config import close_async_persistence, create_async_persistence
 from agent.backends.sandbox_manager import SandboxManager
 from agent.history_reader import ThreadHistoryReader
 from agent.schema import AsyncTaskBinding, UserGroup
+from services.deliverables import DeliverableRegistry
 
 
 AgentFactory = Callable[..., Awaitable[Any]]
@@ -37,7 +36,6 @@ SESSION_NAMESPACE_PREFIX = ("sessions",)
 ASYNC_TASK_NAMESPACE_PREFIX = ("async_tasks",)
 SANDBOX_DELIVERABLE_NAMESPACE_PREFIX = ("sandbox_deliverables",)
 ASYNC_TASK_MESSAGE_PREFIX = "async-task-result:"
-DELIVERABLE_MIME_TYPES = frozenset({"text/markdown", "text/html", "application/json"})
 
 
 class AgentLoader:
@@ -336,40 +334,12 @@ class AgentLoader:
         await self.initialize()
         assert self._store is not None
 
-        registered: list[dict[str, str]] = []
-        for item in deliverables:
-            path = str(item.get("path", ""))
-            mime_type = str(item.get("mime_type", ""))
-            parsed_path = PurePosixPath(path)
-            if (
-                mime_type not in DELIVERABLE_MIME_TYPES
-                or not path.startswith("/deliverables/")
-                or parsed_path.parent != PurePosixPath("/deliverables")
-                or parsed_path.name in {"", ".", ".."}
-            ):
-                continue
-            artifact_id = uuid.uuid5(uuid.NAMESPACE_URL, f"deliverable:{task_id}:{path}").hex
-            filename = parsed_path.name
-            label = str(item.get("label") or filename).strip()[:120] or filename
-            await self._store.aput(
-                SANDBOX_DELIVERABLE_NAMESPACE_PREFIX,
-                artifact_id,
-                {
-                    "user_id": binding.user_id,
-                    "path": path,
-                    "filename": filename,
-                    "mime_type": mime_type,
-                    "label": label,
-                },
-                index=False,
-            )
-            registered.append({
-                "artifact_id": artifact_id,
-                "filename": filename,
-                "mime_type": mime_type,
-                "label": label,
-            })
-        return registered
+        registered = await DeliverableRegistry(self._store).register(
+            user_id=binding.user_id,
+            delivery_id=task_id,
+            specifications=deliverables,
+        )
+        return [{key: value for key, value in item.items() if key != "type"} for item in registered]
 
     async def download_sandbox_deliverable(
         self,

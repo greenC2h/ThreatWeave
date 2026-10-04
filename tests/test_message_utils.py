@@ -69,6 +69,18 @@ class VisualizationExtractionTests(unittest.TestCase):
         """图表必须经过本地资源暂存，不能直接嵌入外部 MCP 的 HTML。"""
         self.assertIsNone(extract_visualization("<html><body>chart</body></html>"))
 
+    def test_deliverable_summary_is_not_misclassified_as_a_chart(self) -> None:
+        """同步子 Agent 的 Markdown 交付说明只能进入下载模型。"""
+        content = (
+            "文件名：`extraction_document_1.md`\n"
+            "类型：`sandbox_deliverable`（沙箱交付件，text/markdown）\n"
+            "artifact_id：`" + "e" * 32 + "`"
+        )
+        from api.message_utils import extract_sandbox_deliverables
+
+        self.assertIsNone(extract_visualization(content))
+        self.assertEqual(extract_sandbox_deliverables(content)[0]["filename"], "extraction_document_1.md")
+
 
 if __name__ == "__main__":
     unittest.main()

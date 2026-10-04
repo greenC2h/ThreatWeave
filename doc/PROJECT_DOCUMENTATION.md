@@ -135,7 +135,7 @@ flowchart LR
 
 定期任务和用户明确要求“采集并入库”时，调度器或主 Agent 同步调用 `IntelligenceWorkflow` 的 `ingest_full` 模式。它按批次创建全新的 A 上下文，确认 Java 已写入规范文档后逐篇调用 B。
 
-用户只要求抽取时走 `EXTRACT_PREVIEW`，生成与用户、正文哈希绑定的结构化草稿而不写图谱。用户要求图谱分析或报告时才提交 C 的独立分析路径。报告文件不会因为采集、抽取或分析自动产生；只有任务明确要求交付文件时，C 才在沙箱 `/deliverables/` 写入文件并输出 `DELIVERABLE` 行。
+用户只要求抽取时走 `EXTRACT_PREVIEW`，生成与用户、正文哈希绑定的结构化草稿而不写图谱。用户要求图谱分析或报告时才提交 C 的独立分析路径。报告文件不会因为采集、抽取或分析自动产生；只有任务明确要求交付文件时，A、B 或 C 才调用统一的 `write_deliverable` 工具写入沙箱 `/deliverables/`，由后端登记为可下载 artifact。
 
 ### 1.6 运行服务
 
@@ -198,7 +198,7 @@ OpenSandbox 必须独立启动并可被项目访问。缺少 `OPEN_SANDBOX_API_K
 
 在启动器终端按 `Ctrl+C`。启动器只停止它创建的进程树，不停止独立 OpenSandbox，也不主动删除 PostgreSQL 数据。
 
-`runtime/` 只保存可再生的 Java 临时目录、日志和本地可视化资源，并被 `.gitignore` 忽略。服务重新启动时会自动创建需要的子目录。用户交付件主要保存在用户沙箱 `/deliverables/`，不应把运行日志当作业务数据。
+`runtime/` 只保存可再生的 Java 临时目录、日志和本地可视化资源，并被 `.gitignore` 忽略。服务重新启动时会自动创建需要的子目录。用户交付件主要保存在用户沙箱 `/deliverables/`，由统一 `write_deliverable` 工具写入，不应把运行日志当作业务数据。
 
 ### 2.4 验证命令
 
@@ -268,7 +268,7 @@ flowchart LR
 
 ### 3.4 交付件和图表资源
 
-C 生成的 Markdown 和 HTML 文件写入用户沙箱 `/deliverables/`。后端登记交付件的 artifact ID、文件名、MIME 和用户归属，下载时重新通过 Cookie 身份校验，不能依赖客户端传入的 `user_id`。
+A、B、C 生成的 Markdown、HTML 或 JSON 文件都经 `write_deliverable` 写入用户沙箱 `/deliverables/`。工具返回受限路径的结构化声明，后端登记 artifact ID、文件名、MIME 和用户归属；下载时重新通过 Cookie 身份校验，不能依赖客户端传入的 `user_id`。
 
 本地图表资源位于 `runtime/visualizations/`，通过 `/visualizations/{artifact_id}` 提供访问。HTML 预览使用 `sandbox allow-scripts` 的受限上下文，下载使用附件响应；过期资源返回占位 SVG，而不暴露本地路径。
 
@@ -533,23 +533,13 @@ MCP 使用 Streamable HTTP，生命周期中创建复用的 `httpx.AsyncClient`�
 
 ### 9.2 HTML 图
 
-用户要求 HTML 图时，C 优先调用配置的 Charts MCP `generate_network_graph_html`；不可用或无返回时使用本地 `build_threat_graph_html`。生成的 HTML 由 C 使用 `write_file` 写入用户沙箱 `/deliverables/`，最终回复输出标准交付行：
-
-```text
-DELIVERABLE: /deliverables/文件名.html | text/html | 用户可读标签
-```
+用户要求 HTML 图时，C 优先调用配置的 Charts MCP `generate_network_graph_html`；不可用或无返回时使用本地 `build_threat_graph_html`。生成的 HTML 由 C 使用 `write_deliverable` 写入用户沙箱 `/deliverables/`，工具返回结构化交付声明，后端据此登记下载信息。
 
 图中只放当前查询支持的节点和边，不为视觉效果添加无证据关系。图不是 ThreatWeave 业务表中的一部分。
 
 ### 9.3 Markdown 报告
 
-用户明确要求 Markdown 报告时，C 使用 `write_file` 写入 `/deliverables/`。报告应包含分析范围、库内证据、主要关联、风险判断、外部背景、限制和下一步建议，并清楚区分事实与推断。
-
-报告交付行格式为：
-
-```text
-DELIVERABLE: /deliverables/文件名.md | text/markdown | 用户可读标签
-```
+用户明确要求 Markdown 报告时，C 使用 `write_deliverable` 写入 `/deliverables/`。报告应包含分析范围、库内证据、主要关联、风险判断、外部背景、限制和下一步建议，并清楚区分事实与推断。
 
 A、B 的 Markdown 导出同样是单独的用户任务，不会因为处理成功自动生成。导出文件与分析报告共用交付件登记和下载接口。
 

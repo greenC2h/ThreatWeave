@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -96,6 +97,24 @@ class FakeDocumentGateway:
     async def get_by_id(self, document_id: int) -> CanonicalDocument:
         assert document_id == self.document.document_id
         return self.document
+
+
+class FakeDeliverableRegistry:
+    """记录工作流登记参数，不依赖沙箱或持久化存储。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def register(self, **kwargs):
+        self.calls.append(kwargs)
+        return [{
+            "type": "sandbox_deliverable",
+            "artifact_id": "a" * 32,
+            "path": "/deliverables/formatted.md",
+            "filename": "formatted.md",
+            "mime_type": "text/markdown",
+            "label": "格式化文章",
+        }]
 
 
 def collected_document() -> CollectedDocument:
@@ -214,6 +233,62 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
             ))
         self.assertEqual(result.documents[0].action, "skipped_collection")
         self.assertEqual(result.documents[0].detail, "来源规则已跳过")
+
+    async def test_format_export_registers_only_actual_tool_output(self) -> None:
+        """用户请求下载时，A 的统一工具结果才会成为 artifact。"""
+        registry = FakeDeliverableRegistry()
+        self.workflow._deliverable_registry = registry
+        self.formatter.return_value = {"messages": [{
+            "type": "tool",
+            "name": "write_deliverable",
+            "content": json.dumps({
+                "type": "deliverable_spec",
+                "path": "/deliverables/formatted.md",
+                "filename": "formatted.md",
+                "mime_type": "text/markdown",
+                "label": "格式化文章",
+            }),
+        }]}
+        collection = CollectionReport("cncert", (CollectionOutcome(
+            url="https://example.test/1", status="ok", document=collected_document(),
+        ),))
+        with patch("intelligence_workflow.workflow.collect_source", AsyncMock(return_value=collection)):
+            result = await self.workflow.run(IntelligenceWorkflowRequest(
+                mode=IntelligenceWorkflowMode.FORMAT_ONLY,
+                actor_id="user-1",
+                source_id="cncert",
+                requested_deliverables=["formatted_markdown"],
+            ))
+        self.assertEqual(len(registry.calls), 1)
+        self.assertEqual(registry.calls[0]["user_id"], "user-1")
+        self.assertEqual(result.deliverables[0].filename, "formatted.md")
+
+    async def test_scheduler_never_registers_user_deliverables(self) -> None:
+        """定期采集的调度身份不能创建无归属下载件。"""
+        registry = FakeDeliverableRegistry()
+        self.workflow._deliverable_registry = registry
+        self.formatter.return_value = {"messages": [{
+            "name": "write_deliverable",
+            "content": json.dumps({
+                "type": "deliverable_spec",
+                "path": "/deliverables/formatted.md",
+                "filename": "formatted.md",
+                "mime_type": "text/markdown",
+                "label": "格式化文章",
+            }),
+        }]}
+        collection = CollectionReport("cncert", (CollectionOutcome(
+            url="https://example.test/1", status="ok", document=collected_document(),
+        ),))
+        with patch("intelligence_workflow.workflow.collect_source", AsyncMock(return_value=collection)):
+            result = await self.workflow.run(IntelligenceWorkflowRequest(
+                mode=IntelligenceWorkflowMode.FORMAT_ONLY,
+                actor_id="system-scheduler",
+                source_id="cncert",
+                requested_deliverables=["formatted_markdown"],
+            ))
+        self.assertEqual(registry.calls, [])
+        self.assertEqual(result.deliverables, [])
 
 
 if __name__ == "__main__":

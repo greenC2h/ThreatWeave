@@ -31,6 +31,9 @@ description: >
    - `COMMIT` 且无 `access_token`：调用一次 `threat_extraction_write`，传入校验通过的实体和关系。
 3. 代码规范化明显格式、校验 schema 和精简引文；模型保留实体、关系与语义角色判断责任。
 
+仅当输入明确要求 `extraction_markdown` 时，才能在完成当前 PREVIEW 或 COMMIT 工作流后调用
+一次 `write_deliverable` 导出抽取结果。交付件不是图谱写入的条件，也不能作为草稿或写入成功的证据。
+
 ## 完成标准
 
 - 每项写入都有格式化文档中唯一出现的精简 `evidence`；

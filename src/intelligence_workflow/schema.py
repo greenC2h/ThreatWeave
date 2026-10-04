@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -17,6 +17,13 @@ class IntelligenceWorkflowMode(StrEnum):
     INGEST_FULL = "ingest_full"
     EXTRACT_PENDING = "extract_pending"
     LIST_PROCESSING = "list_processing"
+
+
+class RequestedDeliverable(StrEnum):
+    """同步工作流允许按用户请求生成的交付件类型。"""
+
+    FORMATTED_MARKDOWN = "formatted_markdown"
+    EXTRACTION_MARKDOWN = "extraction_markdown"
 
 
 class FormattingStatus(StrEnum):
@@ -49,7 +56,7 @@ class IntelligenceWorkflowRequest(BaseModel):
     document_ids: list[int] = Field(default_factory=list)
     max_articles: int = Field(default=3, ge=1, le=100)
     force_refresh: bool = False
-    requested_deliverables: list[str] = Field(default_factory=list)
+    requested_deliverables: list[RequestedDeliverable] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_target(self) -> "IntelligenceWorkflowRequest":
@@ -58,6 +65,8 @@ class IntelligenceWorkflowRequest(BaseModel):
             raise ValueError("document_ids 必须是正整数")
         if len(set(self.document_ids)) != len(self.document_ids):
             raise ValueError("document_ids 不可重复")
+        if len(set(self.requested_deliverables)) != len(self.requested_deliverables):
+            raise ValueError("requested_deliverables 不可重复")
         if self.mode is IntelligenceWorkflowMode.LIST_PROCESSING:
             if self.article_url or self.document_ids:
                 raise ValueError("list_processing 只能按可选 source_id 过滤，不能指定文章")
@@ -68,11 +77,9 @@ class IntelligenceWorkflowRequest(BaseModel):
                 raise ValueError("extract_pending 只能按可选 source_id 过滤")
             return self
 
-        target_count = int(bool(self.source_id)) + int(bool(self.document_ids))
+        target_count = int(bool(self.source_id or self.article_url)) + int(bool(self.document_ids))
         if target_count != 1:
-            raise ValueError("执行请求必须指定 source_id 或 document_ids 中的一种目标")
-        if self.article_url and not self.source_id:
-            raise ValueError("article_url 必须与已批准的 source_id 一起提供")
+            raise ValueError("执行请求必须指定 article_url、source_id 或 document_ids 中的一种目标")
         return self
 
 
@@ -143,10 +150,21 @@ class WorkflowDocumentResult(BaseModel):
     detail: str | None = None
 
 
+class WorkflowDeliverable(BaseModel):
+    """同步工作流为当前用户登记的可下载交付件。"""
+
+    type: Literal["sandbox_deliverable"] = "sandbox_deliverable"
+    artifact_id: str
+    filename: str
+    mime_type: str
+    label: str
+
+
 class IntelligenceWorkflowResult(BaseModel):
     """同步工作流向主 Agent 或调度器返回的紧凑、无正文结果。"""
 
     workflow_id: str
     mode: IntelligenceWorkflowMode
     documents: list[WorkflowDocumentResult] = Field(default_factory=list)
+    deliverables: list[WorkflowDeliverable] = Field(default_factory=list)
     failures: list[str] = Field(default_factory=list)

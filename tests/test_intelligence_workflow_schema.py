@@ -29,6 +29,14 @@ class IntelligenceWorkflowRequestTests(unittest.TestCase):
         )
         self.assertEqual(request.document_ids, [3])
 
+    def test_article_url_can_be_used_without_source_id(self) -> None:
+        request = IntelligenceWorkflowRequest(
+            mode=IntelligenceWorkflowMode.FORMAT_ONLY,
+            actor_id="user-1",
+            article_url="https://example.test/article",
+        )
+        self.assertIsNone(request.source_id)
+
     def test_non_list_request_requires_one_target_kind(self) -> None:
         with self.assertRaises(ValidationError):
             IntelligenceWorkflowRequest(
@@ -59,6 +67,22 @@ class IntelligenceWorkflowRequestTests(unittest.TestCase):
             actor_id="user-1",
         )
         self.assertIsNone(request.source_id)
+
+    def test_requested_deliverable_must_be_known_and_unique(self) -> None:
+        request = IntelligenceWorkflowRequest(
+            mode=IntelligenceWorkflowMode.FORMAT_ONLY,
+            actor_id="user-1",
+            source_id="cncert_cc",
+            requested_deliverables=["formatted_markdown"],
+        )
+        self.assertEqual(request.requested_deliverables[0].value, "formatted_markdown")
+        with self.assertRaises(ValidationError):
+            IntelligenceWorkflowRequest(
+                mode=IntelligenceWorkflowMode.FORMAT_ONLY,
+                actor_id="user-1",
+                source_id="cncert_cc",
+                requested_deliverables=["unknown_file"],
+            )
 
 
 if __name__ == "__main__":
