@@ -6,6 +6,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from langchain_core.messages import AIMessage
+
 from api.chat import (
     _agent_error_detail,
     _get_interrupt_values,
@@ -14,6 +16,8 @@ from api.chat import (
     _run_chat_unlocked,
     _get_stream_source,
     _get_subagent_name,
+    _messages_for_turn,
+    _register_sync_deliverables,
     _serialize_tool_args,
     _serialize_interrupt,
 )
@@ -154,3 +158,37 @@ class ChatModelErrorTests(unittest.IsolatedAsyncioTestCase):
             _agent_error_detail(error),
             (500, "Agent 调用失败：upstream request timed out"),
         )
+
+    async def test_sync_deliverable_persistence_does_not_append_orphan_tool_message(self) -> None:
+        agent = MagicMock()
+        agent.aupdate_state = AsyncMock()
+        registered = [{
+            "type": "sandbox_deliverable",
+            "artifact_id": "artifact-1",
+            "path": "/deliverables/report.md",
+            "filename": "report.md",
+            "mime_type": "text/markdown",
+            "label": "报告",
+        }]
+        messages = [AIMessage(content='报告已生成：/deliverables/report.md')]
+
+        with patch("api.chat.agent_loader.register_user_deliverables", new=AsyncMock(return_value=registered)):
+            result = await _register_sync_deliverables(
+                agent=agent,
+                config={},
+                user_id="u1",
+                thread_id="thread-1",
+                messages=messages,
+                task_tool_ids={"task-1"},
+            )
+
+        self.assertEqual(result, registered)
+        update = agent.aupdate_state.await_args.args[1]["messages"][0]
+        self.assertIsInstance(update, AIMessage)
+        self.assertNotIn("tool_call_id", update.additional_kwargs)
+
+    def test_sync_deliverable_scan_ignores_previous_checkpoint_messages(self) -> None:
+        previous = [AIMessage(id="old", content="旧交付件 /deliverables/old.md")]
+        current = [*previous, AIMessage(id="new", content="新查询")]
+
+        self.assertEqual(_messages_for_turn(current, previous), current[1:])

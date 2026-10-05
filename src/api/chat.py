@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import mimetypes
@@ -15,7 +16,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from agent.schema import AuthResponse, ChatRequest, ChatResponse, ResumeChatRequest, ThreatWeaveContext
@@ -46,6 +47,24 @@ def _state_messages(state: Any) -> list[Any]:
     return messages if isinstance(messages, list) else []
 
 
+def _messages_for_turn(messages: list[Any], previous_messages: list[Any]) -> list[Any]:
+    """只保留本轮新增消息，避免历史交付件被重复登记。"""
+    if previous_messages and len(messages) >= len(previous_messages):
+        return messages[len(previous_messages):]
+    return messages
+
+
+async def _previous_state_messages(agent: Any, config: dict[str, Any]) -> list[Any]:
+    """读取本轮前的消息；兼容没有异步 checkpoint 接口的测试替身。"""
+    get_state = getattr(agent, "aget_state", None)
+    if not callable(get_state):
+        return []
+    state = get_state(config)
+    if not inspect.isawaitable(state):
+        return []
+    return _state_messages(await state)
+
+
 async def _register_sync_deliverables(
     *,
     agent: Any,
@@ -66,16 +85,20 @@ async def _register_sync_deliverables(
     unique = {item["path"]: item for item in specifications}
     if not unique:
         return []
+    delivery_id = f"{thread_id}:sync:{','.join(sorted(task_tool_ids)) or 'direct'}"
     registered = await agent_loader.register_user_deliverables(
-        user_id, f"{thread_id}:{uuid.uuid4().hex}", list(unique.values()),
+        user_id, delivery_id, list(unique.values()),
     )
-    if task_tool_ids:
+    if registered:
         await agent.aupdate_state(
             config,
-            {"messages": [ToolMessage(
-                content=registered,
-                tool_call_id=tool_call_id,
-            ) for tool_call_id in task_tool_ids]},
+            {"messages": [AIMessage(
+                content=[
+                    {"type": "text", "text": "同步交付件已生成。"},
+                    *registered,
+                ],
+                additional_kwargs={"source": "main"},
+            )]},
         )
     return registered
 
@@ -395,6 +418,8 @@ async def _run_chat_unlocked(request: ChatRequest, thread_id: str) -> ChatRespon
         user_id=request.user_id,
         username=username,
     )
+    get_state = getattr(agent, "aget_state", None)
+    previous_messages = await _previous_state_messages(agent, config)
 
     try:
         agent_input = {"messages": [{"role": "user", "content": request.message}]}
@@ -414,6 +439,7 @@ async def _run_chat_unlocked(request: ChatRequest, thread_id: str) -> ChatRespon
     if not answer and not interrupts:
         raise HTTPException(status_code=502, detail="Agent 未返回有效回答")
     result_messages = result.get("messages", []) if isinstance(result, dict) else []
+    result_messages = _messages_for_turn(result_messages, previous_messages)
     task_tool_ids = {
         str(call.get("id"))
         for message in result_messages
@@ -544,6 +570,8 @@ async def _stream_response_unlocked(
             user_id=request.user_id,
             username=username,
         )
+        get_state = getattr(agent, "aget_state", None)
+        previous_messages = await _previous_state_messages(agent, config)
         context = ThreatWeaveContext(user_id=request.user_id, username=username)
         # 必须使用异步流式调用：MCP StructuredTool 不支持同步 invoke/stream。
         # values 流用于捕获 interrupt。仍订阅子图以保证审批和补充信息能冒泡，
@@ -691,7 +719,6 @@ async def _stream_response_unlocked(
                 }
             )
 
-        get_state = getattr(agent, "aget_state", None)
         state = None
         registered_deliverables: list[dict[str, str]] = []
         if not pending_interrupts and callable(get_state):
@@ -701,7 +728,7 @@ async def _stream_response_unlocked(
                 config=config,
                 user_id=request.user_id,
                 thread_id=thread_id,
-                messages=_state_messages(state),
+                messages=_messages_for_turn(_state_messages(state), previous_messages),
                 task_tool_ids=delegation_tool_ids,
             )
             for tool_call_id in delegation_tool_ids:
