@@ -4,14 +4,14 @@ ThreatWeave 是一个面向公开威胁情报的多 Agent 工作台。它将来�
 
 ## 当前架构
 
-- `intel_ingestor`：异步采集并保存格式化后的情报正文。
-- `entity_relation_extractor`：异步抽取实体、别名、关系及其原文出处。
+- `intel_ingestor`：由同步工作流调用，采集并保存格式化后的情报正文。
+- `entity_relation_extractor`：由同步工作流调用，预览或正式抽取实体、别名、关系及其原文出处。
 - `threat_analyst`：异步只读查询图谱，生成 HTML 图和分析报告。
 - FastAPI 与 Vue：认证、对话、异步任务和 artifact 展示。
 - Java Spring Boot：ThreatWeave 文档、实体、关系和 provenance 的 PostgreSQL CRUD。
-- MCP：仅暴露 ThreatWeave 业务 Agent 所需的四个 Java 工具。
+- MCP：按 Agent 权限筛选并暴露 8 个 ThreatWeave 业务工具。
 
-已确认的业务边界和数据模型见 [凿定决策](doc/THREATWEAVE_CONFIRMED_DECISIONS.md)。当前实现状态、验证记录和后续任务见 [交接文档](doc/THREATWEAVE_HANDOFF.md)。
+当前架构、运行方式、接口和排障说明见 [项目技术文档](doc/PROJECT_DOCUMENTATION.md)；已确认的业务边界和数据模型见 [凿定决策](doc/THREATWEAVE_CONFIRMED_DECISIONS.md)。
 
 ## 本地运行
 

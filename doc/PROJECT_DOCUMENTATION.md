@@ -1,211 +1,196 @@
-# ThreatWeave 项目架构与运行说明
+# ThreatWeave 项目技术文档
 
-> 面向首次接手项目的开发者与使用者。本文描述 ThreatWeave 当前可运行的架构、边界和流程。
+> 本文以仓库当前代码为准，说明 ThreatWeave 的运行方式、业务边界、处理链路、数据持久化、接口和排障方法。
+> 它不替代 [`THREATWEAVE_CONFIRMED_DECISIONS.md`](./THREATWEAVE_CONFIRMED_DECISIONS.md) 中已经确认的业务模型；两者不一致时，应先判断是代码尚未同步还是决策已经变更。
 
-## 1. 项目总览
+## 0. 先理解项目
 
-ThreatWeave 是一个面向公开威胁情报的多 Agent 工作台。它将来源文章转化为可追溯的规范文档、实体关系图谱和按需分析交付件。系统的核心业务对象是威胁情报文档、实体、关系、出处和分析报告。
+### 0.1 项目解决什么问题
 
-业务边界和数据模型以 [`THREATWEAVE_CONFIRMED_DECISIONS.md`](THREATWEAVE_CONFIRMED_DECISIONS.md) 为唯一权威来源；本文说明当前代码如何实现这些决策。
+ThreatWeave 是一个面向公开威胁情报的多 Agent 工作台。它把批准来源的文章处理为三类结果：
 
-**推荐阅读顺序**：项目总览 → 服务启动 → Agent 架构 → 情报处理链路 → 持久化与沙箱 → 工具与 MCP → 异步任务 → 会话历史 → 前端展示 → 关键对象总览。
+1. 保留完整事实、结构清晰的规范情报文档；
+2. 带精确原文证据的实体、关系和出处数据；
+3. 基于库内数据的只读分析、HTML 关系图和 Markdown 报告。
 
-### 1.1 系统模块介绍
+项目不是自动处置系统，不负责封禁 IOC、下发规则、自动响应或维护黑名单。所有可写入 ThreatWeave 业务库的事实，都必须能够回到规范文档中的原文证据。
 
-| 模块 | 主要代码 | 主要职责 |
+### 0.2 当前实现摘要
+
+| 事项 | 当前实现 |
+| --- | --- |
+| 可采集来源 | `cncert_cc_threat_warning`、`hillstone_hot_threat`，配置在 `src/agent/skills/subagents/intel_ingestor/intel-ingestion/sources/`。 |
+| A：格式化 | `intel_ingestor` 由 `IntelligenceWorkflow` 同步调用；负责深度清洗和规范正文写入。 |
+| B：抽取 | `entity_relation_extractor` 由同一工作流同步调用；支持预览草稿和正式入库。 |
+| C：分析 | `threat_analyst` 通过 Agent Protocol 异步运行；只读查询图谱，并按需生成 HTML/Markdown 交付件。 |
+| 业务事实存储 | Java Spring Boot 负责 `threatweave` schema 的事务性 CRUD；数据库为 PostgreSQL。 |
+| 会话和任务状态 | FastAPI + LangGraph Store/Checkpointer，均使用同一个 PostgreSQL 服务但与 `threatweave` schema 隔离。 |
+| 文件交付 | Agent 将文件写入用户 OpenSandbox 的 `/deliverables/`，后端登记 artifact 元数据后提供下载。 |
+| 用户界面 | Vue/Vite 聊天工作台，使用 SSE 展示主 Agent、工具、同步子 Agent 和异步任务状态。 |
+
+### 0.3 当前代码与早期文档的主要差异
+
+本节是接手项目时最容易踩坑的地方。
+
+| 早期描述或假设 | 当前代码行为 | 维护要求 |
 | --- | --- | --- |
-| 启动与进程编排 | `start_web.py` | 检查环境和端口，按依赖顺序启动 Java、MCP、异步 Agent Protocol、调度器、FastAPI 和 Vite。 |
-| 前端交互 | `frontend/src/` | 登录、会话、聊天、SSE、异步任务卡片、中断恢复、HTML 图和报告下载。 |
-| HTTP API | `src/api/` | 认证、对话、SSE、会话历史、异步任务状态和交付件访问。 |
-| 主 Agent | `src/agent/main_agent.py` | 组装 DeepAgents 主图、同步工作流子 Agent、C 异步子 Agent、中间件、记忆和用户沙箱。 |
-| 业务子 Agent | `src/agent/subagents/` | 托管 A 格式化、B 实体关系抽取的内部执行图，以及 C 的独立异步图。 |
-| 情报采集 | `src/intel_ingestor/` | 读取受控来源配置，抓取文章，完成代码侧初步清洗并生成批处理输入。 |
-| ThreatWeave MCP | `src/mcp_server/` | 将 Java 后端的文档 CRUD、抽取写入和图谱查询暴露给子 Agent。 |
-| Java 业务后端 | `java-backend/` | 对 PostgreSQL 中的文档、实体、别名、关系和 provenance 提供事务性 CRUD。 |
-| 调度器 | `src/scheduler/runner.py` | 按来源最低间隔直接执行并等待系统拥有的完整入库工作流。 |
-| 持久化与运行时 | PostgreSQL、OpenSandbox、`runtime/` | 保存会话、长期记忆、认证、威胁情报业务数据和用户交付件运行资源。 |
+| A、B、C 都作为多个 Agent Protocol 图异步运行 | 只有 C 注册为 `threat_analyst_async`；A/B 由本地 `IntelligenceWorkflow` 同步等待。 | 不要为 A/B 创建远程任务或用任务轮询替代工作流。 |
+| 只维护 CNCERT/CC 一个来源 | 当前代码已启用 CNCERT/CC 和 Hillstone 两个 YAML 来源。 | 增加来源时同步更新来源配置、测试和本文。 |
+| Hillstone 详情页可以直接抓 HTML | Hillstone 详情页是 SPA 壳，采集器按 `fetch_url_template` 请求公开 JSON 接口。 | 修改来源适配器时必须保持接口转换，不能退回抓空 HTML。 |
+| ThreatWeave MCP 只有四或七个工具 | 当前 `threatweave_tools.py` 注册 8 个业务工具，包含预览、草稿提交和抽取读取。 | 子 Agent 通过配置筛选最小权限，不要按“全量工具”理解权限。 |
+| Java 只提供文档写入、抽取写入和图谱查询 | 当前还提供单文档抽取读取接口，供 Markdown 导出使用。 | 导出抽取结果应读取 Java 已确认数据，不从模型文本反解析。 |
+| 认证可能使用旧 MySQL 配置 | 当前 `src/api/auth.py` 与 LangGraph、Java 都读取 `DB_*`，连接 PostgreSQL；`MYAGENT_AUTH_MYSQL_*` 不是当前认证配置。 | 以 `.env.example` 和 `src/agent/config.py` 为配置依据。 |
+| HTML 图直接保存在项目目录并作为业务数据 | 当前 C 的 HTML 是用户沙箱交付件；`runtime/visualizations/` 只保留旧图表资源兼容路径。 | 不把 `runtime/` 当作情报正文、图谱或交付件的权威存储。 |
+
+## 1. 总体架构
+
+### 1.1 模块边界
+
+| 层 | 目录或入口 | 职责 |
+| --- | --- | --- |
+| 启动编排 | `start_web.py` | 检查依赖和端口，按依赖顺序启动 Java、MCP、Agent Protocol、调度器、FastAPI 和 Vite。 |
+| Web/API | `src/api/` | Cookie 认证、聊天、SSE、会话历史、异步任务状态、图表和交付件下载。 |
+| 主 Agent | `src/agent/main_agent.py` | 识别用户意图，选择同步工作流或异步 C，管理技能、记忆和用户沙箱。 |
+| 同步业务工作流 | `src/intelligence_workflow/` | 确定性地完成采集、批次、状态迁移、A/B 调用、幂等和导出。 |
+| 采集器 | `src/intel_ingestor/` | 读取已批准来源，抓取文章或 JSON，进行机械清洗，生成 A 的输入。 |
+| Agent 工具 | `src/agent/tools/` | 为主 Agent、工作流和 C 提供受控工具入口。 |
+| MCP 适配层 | `src/mcp_server/` | 将 Java 业务接口包装为按权限筛选的 MCP 工具。 |
+| Java 业务层 | `java-backend/` | PostgreSQL `threatweave` schema 的文档、实体、关系和 provenance CRUD。 |
+| 调度器 | `src/scheduler/runner.py` | 使用系统专用身份周期性执行 `ingest_full`。 |
+| 前端 | `frontend/src/` | 登录、会话、SSE 消息、任务轮询、中断恢复和交付件入口。 |
+
+### 1.2 运行时拓扑
 
 ```mermaid
 flowchart TB
-    USER["分析人员"] --> WEB["Vue 威胁情报工作台"]
-    WEB --> API["FastAPI<br/>认证、聊天、SSE、下载"]
-    API --> MAIN["主 Agent<br/>意图理解与任务路由"]
+    USER["用户"] --> WEB["Vue/Vite 工作台<br/>127.0.0.1:19000"]
+    WEB --> API["FastAPI<br/>认证、聊天、SSE、下载<br/>127.0.0.1:18000"]
+    API --> MAIN["主 Agent<br/>按用户复用"]
 
-    MAIN -->|"文章处理：同步等待"| ORCHESTRATOR["同步编排器"]
-    ORCHESTRATOR --> WORKFLOW["IntelligenceWorkflow<br/>状态、去重、分批与重试"]
-    WORKFLOW --> A["A：格式化规范正文"]
-    WORKFLOW --> B["B：抽取实体与关系"]
+    MAIN -->|"同步等待"| WF["IntelligenceWorkflow"]
+    WF --> A["A intel_ingestor<br/>格式化并写 documents"]
+    WF --> B["B entity_relation_extractor<br/>预览或写入图谱"]
 
-    MAIN -->|"分析/图谱/报告：异步提交"| PROTOCOL["Agent Protocol"]
-    PROTOCOL --> C["C：只读威胁分析"]
+    MAIN -->|"创建异步任务"| PROTOCOL["Agent Protocol<br/>127.0.0.1:18082"]
+    PROTOCOL --> C["C threat_analyst<br/>只读查询和生成交付件"]
 
-    A --> MCP["ThreatWeave MCP<br/>最小权限工具"]
+    A --> MCP["ThreatWeave MCP<br/>127.0.0.1:18081/mcp"]
     B --> MCP
     C --> MCP
-    MCP --> JAVA["Java 业务 CRUD"]
+    MCP --> JAVA["Java Spring Boot<br/>127.0.0.1:18080"]
     JAVA --> DB[("PostgreSQL")]
-    A --> SANDBOX["调用方 OpenSandbox<br/>/skills 与 Agent 文件"]
-    B --> SANDBOX
-    C --> SANDBOX
 
-    classDef sync fill:#dbeafe,stroke:#2563eb,color:#111827;
-    classDef async fill:#fef3c7,stroke:#d97706,color:#111827;
-    class ORCHESTRATOR,WORKFLOW,A,B sync;
-    class PROTOCOL,C async;
+    MAIN --> SB["用户 OpenSandbox"]
+    A --> SB
+    B --> SB
+    C --> SB
+    C --> DELIVER["/deliverables<br/>用户交付件"]
+    DELIVER --> API
 ```
 
-### 1.2 业务 Agent 分工
-
-ThreatWeave 有三个业务 Agent。A 和 B 由确定性工作流以内部异步调用方式执行；C 保持独立的用户可见异步任务。编排器是主 Agent 的本地同步子 Agent，不是独立远程图。三个 Agent 的 Skill 都由仓库同步到调用方沙箱 `/skills/` 后读取；运行时不直接读取宿主技能目录。
-
-| Agent | 主要职责 | 数据权限 |
-| --- | --- | --- |
-| `intelligence_workflow_orchestrator` | 主 Agent 的同步子 Agent，只调用确定性工作流并等待结果。 | 不直接写业务表。 |
-| `intel_ingestor` | 以模型为主深度清洗和格式化文章，保留完整情报事实，调用 Java MCP 覆盖写入规范文档。 | 写 `documents`。 |
-| `entity_relation_extractor` | 读取格式化文档，提取实体、别名、关系、语义角色和精简 evidence；预览时保存草稿，提交时写入图谱。 | 写草稿或 `entities`、`entity_aliases`、`relations`、`provenance`。 |
-| `threat_analyst` | 只读查询图谱，区分库内事实、外部背景和分析推断，按需生成 HTML 图和 Markdown 报告。 | 只写用户交付件，不写业务表。 |
-
-A 的代码工具先做来源校验、HTML 正文容器提取、编码修复、基础 Markdown 渲染和稳定 `doc_key` 生成；模型负责广告、导航、推荐、乱码、重复内容和混乱断行等深度整理。A 不抽取实体、不判断恶意性、不做威胁分析。
-
-B 的模型负责上下文理解和语义判断；代码只负责按块读取、字段规范化、类型校验、evidence 唯一匹配、字符偏移生成、去重和事务性写入。搜索结果只能辅助消歧或背景理解，不能作为写库证据。
-
-C 只有图谱查询和图生成能力，没有文档写入、抽取写入或数据库修改工具。HTML 图和 Markdown 报告是用户明确要求时才生成的独立交付件。
-
-### 1.3 沙箱执行与 Skill 加载
-
-仓库 `src/agent/skills/` 是可审计、可版本控制的 Skill 同步源，不是 Agent 的运行时文件系统。每次主 Agent、A、B 或 C 执行前，`SandboxSkillsMiddleware` 会通过 `SandboxSkillSynchronizer` 将其所需 Skill 和固定 `AGENTS.md` 增量同步到对应 OpenSandbox；随后 Agent 只从 `/skills/` 读取。
-
-| 调用来源 | 使用的沙箱 | 其中运行的 Agent | 数据边界 |
-| --- | --- | --- | --- |
-| 用户聊天 | 当前用户持久化沙箱 | 主 Agent、A、B、C | 用户文件与 `/deliverables/` 只属于该用户；业务文档和图谱仍通过 MCP 写入 PostgreSQL。 |
-| 定期调度 | `system-scheduler` 持久化专用沙箱 | A、B | 不含普通用户会话、长期记忆或交付件；只用于系统采集链路。 |
+### 1.3 最重要的执行边界
 
 ```mermaid
 flowchart LR
-    REPO["src/agent/skills/<br/>受版本控制的同步源"] --> SYNC["SandboxSkillSynchronizer"]
-    SYNC --> USER_SB["用户 OpenSandbox<br/>/skills/"]
-    SYNC --> SYSTEM_SB["system-scheduler OpenSandbox<br/>/skills/"]
-    USER_SB --> USER_AGENTS["主 Agent / A / B / C"]
-    SYSTEM_SB --> SYSTEM_AGENTS["定期任务 A / B"]
-    USER_AGENTS --> MCP["ThreatWeave MCP"]
-    SYSTEM_AGENTS --> MCP
-    MCP --> DB[("PostgreSQL 业务数据")]
+    REQUEST["用户请求"] --> CLASSIFY{"主 Agent 判断意图"}
+    CLASSIFY -->|"清洗/抽取/入库/状态"| SYNC["同步工作流"]
+    SYNC --> RESULT["当前请求返回结构化摘要"]
+    CLASSIFY -->|"图谱/关联分析/报告"| ASYNC["start_async_task"]
+    ASYNC --> POLL["FastAPI 轮询远程 run"]
+    POLL --> RESULT2["终态结果投递回原会话"]
 ```
 
-沙箱保存 Agent 所需文件和用户交付件，不是威胁情报正文或图谱的权威存储。A/B 的规范正文、抽取结果和状态仍分别由 Java CRUD 与工作流 PostgreSQL schema 持久化。
+- 主 Agent 不直接写 `threatweave` 业务表。
+- A 只写规范文档；B 只写实体、别名、关系和 provenance；C 不写业务表。
+- A/B 的完成依据是受控工具成功返回和工作流状态，而不是模型最后一句自然语言。
+- C 的异步任务有独立的 Agent Protocol thread/run，但最终结果仍绑定到发起用户和父会话。
 
-### 1.4 用户请求路由
+## 2. 本地运行
 
-主 Agent 只负责识别意图和选择入口；它不直接访问威胁情报业务表。文章处理始终进入同步工作流，耗时的图谱分析和交付件生成进入 C 的异步任务。
+### 2.1 前置条件
 
-```mermaid
-flowchart TD
-    REQUEST["用户自然语言请求"] --> CLASSIFY{"主 Agent 识别意图"}
-    CLASSIFY -->|"清洗文章"| FORMAT["FORMAT_ONLY"]
-    CLASSIFY -->|"提取但不入库"| PREVIEW["EXTRACT_PREVIEW"]
-    CLASSIFY -->|"处理并入库"| INGEST["INGEST_FULL"]
-    CLASSIFY -->|"处理待抽取文章"| PENDING["EXTRACT_PENDING"]
-    CLASSIFY -->|"查看处理状态"| LIST["LIST_PROCESSING"]
-    CLASSIFY -->|"分析、图谱或报告"| ANALYZE["提交 threat_analyst 异步任务"]
+需要以下组件：
 
-    FORMAT --> WORKFLOW["同步 IntelligenceWorkflow"]
-    PREVIEW --> WORKFLOW
-    INGEST --> WORKFLOW
-    PENDING --> WORKFLOW
-    LIST --> WORKFLOW
-    WORKFLOW --> RESPONSE["当前请求内返回处理摘要"]
-    ANALYZE --> ASYNC_RESULT["任务完成后返回图谱或报告"]
-```
+- Windows 本地 `.venv`，Python 3.12，由 uv 创建；
+- JDK、Maven 和 Node.js；
+- PostgreSQL，当前 Python、Java 和认证共用 `DB_*` 连接配置；
+- 可访问的 OpenSandbox 服务，默认 `127.0.0.1:18083`；
+- 可用的 DeepSeek 模型服务；
+- 可选的公共搜索 MCP 和 Charts MCP。
 
-### 1.5 情报数据流
-
-```mermaid
-flowchart LR
-    SOURCE["已批准来源配置"] --> COLLECT["确定性采集<br/>抓取、编码修复、正文定位"]
-    COLLECT --> BATCH["工作流分批<br/>最多 3 篇"]
-    BATCH --> A["A 深度格式化<br/>去噪与结构恢复"]
-    A --> DOC[("documents<br/>规范正文")]
-    DOC --> B["B 分块抽取<br/>实体、关系、证据"]
-    B --> CHECK["字段与 evidence 校验"]
-    CHECK -->|"预览"| DRAFT[("workflow 草稿")]
-    CHECK -->|"提交"| GRAPH[("实体、关系、provenance")]
-    GRAPH --> C["C 只读分析"]
-    C --> OUTPUT["HTML 图 / Markdown 报告"]
-```
-
-定期任务和用户明确要求“采集并入库”时，调度器或主 Agent 同步调用 `IntelligenceWorkflow` 的 `ingest_full` 模式。它按批次创建全新的 A 上下文，确认 Java 已写入规范文档后逐篇调用 B。
-
-用户只要求抽取时走 `EXTRACT_PREVIEW`，生成与用户、正文哈希绑定的结构化草稿而不写图谱。用户要求图谱分析或报告时才提交 C 的独立分析路径。报告文件不会因为采集、抽取或分析自动产生；只有任务明确要求交付文件时，A、B 或 C 才调用统一的 `write_deliverable` 工具写入沙箱 `/deliverables/`，由后端登记为可下载 artifact。
-
-### 1.6 运行服务
-
-统一启动器托管以下服务：
-
-| 服务 | 默认地址 | 说明 |
-| --- | --- | --- |
-| Vue / Vite | `http://127.0.0.1:19000` | 用户访问的聊天工作台。 |
-| FastAPI | `http://127.0.0.1:18000` | 认证、聊天、历史、任务和资源接口。 |
-| Java Spring Boot | `http://127.0.0.1:18080` | ThreatWeave PostgreSQL CRUD。 |
-| ThreatWeave MCP | `http://127.0.0.1:18081/mcp` | Python MCP 适配层。 |
-| Agent Protocol | `http://127.0.0.1:18082` | C 的独立异步分析图。 |
-| OpenSandbox | `http://127.0.0.1:18083` | 独立外部服务，不由 `start_web.py` 启动。 |
-
-调度器是启动器托管的后台进程，不监听 HTTP 端口。
-
-## 2. 服务启动
-
-### 2.1 运行前提
-
-项目使用根目录 `.venv`，由 uv 创建。依赖 JDK 17、Maven、Node.js、PostgreSQL、OpenSandbox 和可用的模型服务。
+初始化 Python 环境：
 
 ```powershell
 uv venv --python 3.12 .venv
 uv pip install --python .\.venv\Scripts\python.exe -r requirements.txt
 ```
 
-敏感配置只放在根目录 `.env`，参照 `.env.example`。主要配置包括：
+### 2.2 配置项
 
-- `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`：主 Agent 和摘要模型。
-- `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_SSLMODE`：PostgreSQL。
-- `OPEN_SANDBOX_HOST`、`OPEN_SANDBOX_PORT`、`OPEN_SANDBOX_API_KEY`、`OPEN_SANDBOX_IMAGE`：沙箱客户端。
-- `MYAGENT_*_PORT` 和 `MYAGENT_ASYNC_AGENT_PROTOCOL_URL`：服务地址覆盖项。
-- `BING_SEARCH_MCP_URL`、图表 MCP 等外部 MCP 配置：按当前本机环境配置。
+敏感值只放在项目根目录 `.env`，不要写入代码、Skill 或日志。完整模板见 [`.env.example`](../.env.example)。
 
-### 2.2 启动方式
+| 配置 | 用途 | 默认或说明 |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` | 主 Agent、摘要和子 Agent 模型 | 模型不可用时服务可以启动，但业务请求会失败。 |
+| `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_SSLMODE` | PostgreSQL | 供认证、LangGraph、工作流和 Java 使用。 |
+| `OPEN_SANDBOX_API_KEY` | OpenSandbox 鉴权 | 缺少时禁用沙箱预热和需要沙箱的 Agent 执行。 |
+| `OPEN_SANDBOX_HOST`、`OPEN_SANDBOX_PORT`、`OPEN_SANDBOX_IMAGE` | 沙箱服务和新沙箱镜像 | 默认端口 `18083`。 |
+| `MODELSCOPE_BING_SEARCH_MCP_TOKEN` | 公共搜索 MCP | 缺少时使用受限 `web_search` 降级工具。 |
+| `MODELSCOPE_CHARTS_MCP_URL` | Charts MCP | C 生成 HTML 图所需；不可用时不会伪造成功图。 |
+| `THREATWEAVE_SCHEDULER_ENABLED` | 是否由启动器托管定时采集 | `.env.example` 默认 `false`。 |
+| `THREATWEAVE_WORKFLOW_RUNNING_LEASE_SECONDS` | 工作流 `running` 状态的崩溃恢复租约 | 默认 7200 秒，不能小于 60。 |
+| `MYAGENT_*` 服务端口变量 | 覆盖 FastAPI、Vite、Java、MCP、Agent Protocol 地址 | 未配置时使用下表默认值。 |
+
+旧的 `MYAGENT_AUTH_MYSQL_*` 变量不被当前认证代码读取，不要据此判断认证数据库。
+
+### 2.3 默认服务
 
 ```powershell
 .\.venv\Scripts\python.exe .\start_web.py
 ```
 
-启动器的顺序是：
+| 服务 | 默认地址 | 是否由 `start_web.py` 启动 | 启动探测 |
+| --- | --- | --- | --- |
+| FastAPI | `http://127.0.0.1:18000` | 是 | `GET /` |
+| Java Spring Boot | `http://127.0.0.1:18080` | 是 | 根路径可返回 2xx-4xx 即表示监听成功，根路径 404 不代表 Java 未启动。 |
+| ThreatWeave MCP | `http://127.0.0.1:18081/mcp` | 是 | Streamable HTTP；普通 GET 可能是 406。 |
+| Agent Protocol | `http://127.0.0.1:18082` | 是 | `GET /ok` |
+| Vue/Vite | `http://127.0.0.1:19000` | 是 | `GET /` |
+| OpenSandbox | `http://127.0.0.1:18083` | 否 | 由独立服务管理。 |
+
+启动顺序由依赖决定：
 
 ```mermaid
 flowchart TD
-    A["检查 .venv、前端和 Java 项目"] --> B["检查托管服务端口"]
-    B --> C["启动 Java 后端并等待 18080"]
-    C --> D["启动 ThreatWeave MCP 并等待 18081/mcp"]
-    D --> E["启动 Agent Protocol 并等待 18082/ok"]
-    E --> F["启动调度器"]
-    F --> G["启动 FastAPI 并等待 18000"]
-    G --> H["启动 Vite 并等待 19000"]
+    CHECK["检查 .venv、前端、Java 和端口"] --> JAVA["启动 Java，等待 18080"]
+    JAVA --> MCP["启动 ThreatWeave MCP，等待 18081/mcp"]
+    MCP --> PROTOCOL["启动 Agent Protocol，等待 18082/ok"]
+    PROTOCOL --> SCHEDULER{"调度器开关"}
+    SCHEDULER -->|"true"| SCHED["启动系统调度器"]
+    SCHEDULER -->|"false"| API["启动 FastAPI，等待 18000"]
+    SCHED --> API
+    API --> VITE["启动 Vite，等待 19000"]
 ```
 
-启动器只验证服务入口可响应，不代表模型、数据库、真实沙箱或业务请求已经成功。MCP 的普通 GET 可能返回 406，只要端点可处理请求即视为启动探测通过。
+启动器的健康检查只证明进程已监听并能响应，不等同于数据库、模型、MCP 外部服务或真实沙箱业务可用。
 
-定时采集器是否由启动器托管由 `THREATWEAVE_SCHEDULER_ENABLED` 控制；当前本地 `.env` 配置为 `false`，因此启动器暂不创建调度器进程。需要恢复定时采集时将其改为 `true` 后重启 `start_web.py`。
+### 2.4 停止和运行目录
 
-OpenSandbox 必须独立启动并可被项目访问。缺少 `OPEN_SANDBOX_API_KEY` 时，页面、认证和部分历史接口仍可启动，但第一次需要沙箱的 Agent 请求会失败。
+在启动器终端按 `Ctrl+C`。它只停止自己创建的进程树，不停止独立 OpenSandbox，也不删除 PostgreSQL 数据。
 
-### 2.3 停止和运行产物
+| 路径 | 作用 | 是否为业务权威数据 |
+| --- | --- | --- |
+| `runtime/java-tmp/` | Java 通过 `JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=...` 使用的临时目录。 | 否，但运行 Java 时应保留。 |
+| `runtime/visualizations/` | 旧图表/兼容图表资源的本地缓存，FastAPI 会按 TTL 清理。 | 否，可再生。 |
+| 用户沙箱 `/deliverables/` | Markdown、HTML、JSON 用户交付件。 | 是当前下载路径，但不在项目本地目录。 |
+| PostgreSQL | 认证、会话、工作流状态、规范文档、实体、关系和出处。 | 是业务权威存储。 |
 
-在启动器终端按 `Ctrl+C`。启动器只停止它创建的进程树，不停止独立 OpenSandbox，也不主动删除 PostgreSQL 数据。
+`runtime/` 被 `.gitignore` 忽略。除 `java-tmp` 外的运行时内容删除后，服务会按需重新创建；删除本地日志不会删除用户沙箱交付件或数据库内容。
 
-`runtime/` 只保存可再生的 Java 临时目录、日志和本地可视化资源，并被 `.gitignore` 忽略。服务重新启动时会自动创建需要的子目录。用户交付件主要保存在用户沙箱 `/deliverables/`，由统一 `write_deliverable` 工具写入，不应把运行日志当作业务数据。
-
-### 2.4 验证命令
+### 2.5 验证命令
 
 ```powershell
-$env:PYTHONPATH="src"
+$env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
 
 Set-Location .\frontend
@@ -216,580 +201,499 @@ Set-Location ..
 mvn.cmd -f .\java-backend\pom.xml -DskipTests compile
 ```
 
-Python 测试使用 mock、内存状态和临时目录，不等同于真实模型或真实外部服务验证。真实链路验证需要同时启动服务、配置 PostgreSQL、模型、MCP 和 OpenSandbox。
+测试主要隔离外部服务、模型和文件系统；全部通过也不代表真实来源、OpenSandbox 或 Charts MCP 已完成端到端验证。
 
-## 3. 应用生命周期与持久化
+## 3. 用户请求如何变成结果
 
-### 3.1 FastAPI 生命周期
+### 3.1 主 Agent 的职责
 
-`src/api/chat.py` 创建 FastAPI 应用并注册认证、聊天、历史和异步任务路由。应用启动时执行：
+主 Agent 由 `src/agent/main_agent.py` 组装，负责：
 
-1. `AgentLoader.initialize()` 创建 PostgreSQL Store 和 Checkpointer。
-2. 对 LangGraph Store 和 Checkpointer 执行 `setup()`。
-3. 创建 `SandboxManager`，按配置异步预热一个未分配沙箱。
-4. 创建 `ThreadHistoryReader`。
-5. 启动本地可视化资源清理任务。
+- 读取当前用户、会话和记忆上下文；
+- 将主技能同步到用户沙箱；
+- 判断请求是同步情报处理还是异步分析；
+- 调用同步编排子 Agent 或提交 `threat_analyst` 异步任务；
+- 把结构化结果整理为用户可读消息。
 
-关闭时停止清理任务，调用 `AgentLoader.shutdown()`，释放沙箱管理器和 PostgreSQL 连接。关闭不会删除 checkpoint、长期记忆、会话索引或数据库业务数据。
+主 Agent 的普通工具包括公共搜索、异步任务操作和补充信息请求。ThreatWeave 文档、抽取和图谱工具不直接暴露给主 Agent，而由 A/B/C 的最小权限配置使用。
 
-### 3.2 PostgreSQL 分区
+### 3.2 同步工作流模式
 
-项目使用同一个 PostgreSQL 服务，但按 schema 和用途隔离：
+`IntelligenceWorkflowRequest` 定义五种模式：
 
-| 区域 | 内容 |
-| --- | --- |
-| `auth` | 用户账号、PBKDF2 密码哈希、会话 token 摘要和过期时间。 |
-| LangGraph Store | 用户长期记忆、会话索引、异步任务绑定、沙箱绑定和交付件元数据。 |
-| LangGraph Checkpointer | 会话消息、工具调用、执行状态和中断恢复状态。 |
-| `threatweave` | 文档、实体、别名、关系和 provenance。 |
-| `workflow` | 文档处理状态、仅抽取草稿和一次性内部授权。 |
+| 模式 | 目标 | 是否采集 | 是否调用 B | 是否写图谱 |
+| --- | --- | ---: | ---: | ---: |
+| `format_only` | 获取或导出规范正文 | 可选 | 否 | 否 |
+| `extract_preview` | 提取当前正文的结构化草稿 | 可选 | 是 | 否 |
+| `ingest_full` | 格式化并完成正式抽取入库 | 可选 | 是 | 是 |
+| `extract_pending` | 处理已格式化但尚未完成抽取的文档 | 否 | 是 | 是 |
+| `list_processing` | 查询处理状态 | 否 | 否 | 否 |
 
-LangGraph 的表由 Python `setup()` 创建；ThreatWeave 业务表由 Java `ThreatWeaveSchemaInitializer` 启动时创建。项目当前没有单独的 `db/migrations` 目录。
+目标可以是已批准 `source_id`、一篇符合来源规则的 `article_url` 或已有 `document_ids`。`list_processing` 只能按可选来源筛选；`extract_pending` 不能指定文章 URL 或文档 ID。
 
-```mermaid
-flowchart LR
-    AUTH["auth<br/>账号与 Cookie 会话"]
-    MEMORY["LangGraph Store<br/>记忆、会话索引、任务与交付元数据"]
-    CHECKPOINT["LangGraph Checkpointer<br/>消息与执行状态"]
-    FLOW["workflow<br/>处理状态、草稿、一次性授权"]
-    INTEL["threatweave<br/>文档、实体、关系、出处"]
-
-    API["FastAPI"] --> AUTH
-    MAIN["主 Agent"] --> MEMORY
-    MAIN --> CHECKPOINT
-    WORKFLOW["IntelligenceWorkflow"] --> FLOW
-    JAVA["Java CRUD"] --> INTEL
-    MCP["MCP"] --> JAVA
-```
-
-### 3.3 会话和 Agent 缓存
-
-`AgentLoader` 维护进程内的 `user_id -> UserGroup` 缓存。同一用户的多个 `thread_id` 复用同一个主 Agent 图，但每个 thread 使用独立的 PostgreSQL checkpoint。不同用户分别拥有 Agent、沙箱和长期记忆命名空间。
-
-进程内缓存不是跨 worker 的共享状态；跨重启恢复依赖 PostgreSQL。当前实现的会话写入互斥只覆盖单个 FastAPI 进程。
-
-### 3.4 交付件和图表资源
-
-A、B、C 生成的 Markdown、HTML 或 JSON 文件都经 `write_deliverable` 写入用户沙箱 `/deliverables/`。工具返回受限路径的结构化声明，后端登记 artifact ID、文件名、MIME 和用户归属；下载时重新通过 Cookie 身份校验，不能依赖客户端传入的 `user_id`。
-
-本地图表资源位于 `runtime/visualizations/`，通过 `/visualizations/{artifact_id}` 提供访问。HTML 预览使用 `sandbox allow-scripts` 的受限上下文，下载使用附件响应；过期资源返回占位 SVG，而不暴露本地路径。
-
-## 4. 用户认证与身份边界
-
-### 4.1 认证流程
-
-认证实现位于 `src/api/auth.py`，使用 PostgreSQL `auth` schema。注册需要一次性验证码；登录只需要账号和密码。密码使用独立随机盐的 PBKDF2-SHA256 哈希保存，数据库不保存明文密码。
-
-认证接口为：
-
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| `GET` | `/auth/captcha` | 创建验证码图片。 |
-| `POST` | `/auth/register` | 校验验证码、创建用户并建立会话。 |
-| `POST` | `/auth/login` | 校验账号密码并建立会话。 |
-| `GET` | `/auth/me` | 根据 HttpOnly Cookie 获取当前用户。 |
-| `POST` | `/auth/logout` | 删除数据库会话并清除 Cookie。 |
-| `GET` | `/auth/health` | 认证模块健康检查。 |
-
-会话 token 只通过 HttpOnly Cookie 传递，数据库保存 SHA-256 摘要。`/auth/me`、聊天、历史、异步任务和交付件下载均使用当前 Cookie 身份。
-
-### 4.2 身份约束
-
-业务请求体中的 `user_id` 不再作为可信身份来源。会话归属、异步任务归属、交付件归属和长期记忆命名空间均使用服务端解析出的当前用户。
-
-会话 API 先校验 `thread_id` 是否属于当前用户；异步任务查询只允许任务所属用户访问；交付件下载使用 `get_current_user`，不接受请求参数覆盖身份。
-
-## 5. Agent 架构与中间件
-
-### 5.1 主 Agent
-
-`src/agent/main_agent.py` 是主图组合根，负责装配：
-
-- DeepSeek 主模型和摘要模型；
-- 公共网络搜索工具；
-- 异步任务提交、查询、列举和取消工具；
-- 补充信息工具；
-- 主 Agent 技能管理工具；
-- 同步工作流编排子 Agent 和 C 的远程子 Agent 规格；
-- 用户级 OpenSandbox backend，并将该稳定代理传给同步工作流工具；
-- PostgreSQL Store 和 Checkpointer。
-
-主 Agent 只负责理解用户意图、选择同步工作流或异步分析任务、整理结果和回答用户，不直接调用 ThreatWeave 文档、抽取或图谱业务工具。
-
-### 5.2 中间件顺序
-
-主 Agent 使用以下中间件：
-
-1. `ContextInjectionMiddleware`：将运行时用户身份和记忆路径注入模型可见上下文。
-2. `SandboxSkillsMiddleware`：在 DeepAgents 发现技能前，将版本控制下的技能同步到当前用户沙箱；运行时只发现沙箱 `/skills/` 副本。
-3. Agent protection middleware：限制模型/工具调用次数，支持自动摘要和主动压缩。
-4. `SkillManagementVisibilityMiddleware`：只在用户请求技能管理时暴露技能管理工具。
-5. `MemoryUpdateMiddleware`：Agent 完成后更新用户偏好和近期查询。
-
-中间件中的上下文、checkpoint 和 Store 是运行时状态，不应与 ThreatWeave 业务表混用。
-
-### 5.3 异步子 Agent 注册
-
-`src/agent/subagents/async_registry.py` 只为用户可见的远程图声明名称、图 ID、配置文件、工具加载器和启动说明。`langgraph.json` 只注册以下图：
-
-```text
-threat_analyst_async
-```
-
-主 Agent 的本地 `intelligence_workflow_orchestrator` 通过 `task` 同步执行 A/B 工作流；只有 C 通过 Agent Protocol 创建独立 thread/run。C 的任务结果由 FastAPI 轮询并在父会话空闲时投递。
-
-## 6. 情报采集和格式化链路
-
-### 6.1 来源配置
-
-当前已登记来源配置为：
-
-```text
-src/agent/skills/subagents/intel_ingestor/
-  intel-ingestion/sources/cncert_cc.yaml
-  intel-ingestion/sources/hillstone_hot_threat.yaml
-```
-
-`src/intel_ingestor/sources.py` 负责读取和校验来源配置。来源至少需要 `source_id`、入口 URL、启用状态、解析器类型、最低间隔和文章 URL 模式。来源配置是代码可校验的结构化文件，不能在 Agent 运行中临时扩展。
-
-Hillstone 热点威胁详情页是前端单页应用，文章 URL 通过来源配置中的 `fetch_url_template` 映射到公开 JSON 详情接口；`external_id_query_parameter` 用于从 `detail?id=...` URL 生成稳定的外部文章标识。
-
-### 6.2 代码侧采集
-
-`src/intel_ingestor/ingestor.py` 和 `cleaner.py` 负责确定性处理：
-
-1. 校验来源是否登记且启用。
-2. 抓取来源列表页。
-3. 从 `href` 或 `onclick` 发现符合模式的文章 URL。
-4. 逐篇抓取文章页或来源声明的详情接口。
-5. 修复字符编码，提取配置指定的正文容器。
-6. 清除脚本、样式和明显页面容器噪声，转为基础 Markdown。
-7. 根据来源、路径或查询参数外部 ID 和 URL 生成稳定 `doc_key`。
-8. 生成 `preliminary_content`，交给 A 做深度格式化。
-
-这一步不写数据库，不负责判断广告、恶意性、IOC 或关系语义，也不把初步清洗结果当成最终正文。
-
-### 6.3 编排和上下文边界
-
-`IntelligenceWorkflow` 负责来源采集、状态检查和受控分批。每次最多处理三篇，并受正文字符预算限制；超过数量或预算就切换到下一批。每批都新建一个 A 上下文，上一批的正文不会继续留在下一批上下文中。
-
-```mermaid
-sequenceDiagram
-    participant Caller as 调度器或主 Agent
-    participant Flow as IntelligenceWorkflow
-    participant Fetch as 来源采集代码
-    participant A as A 格式化 Agent
-    participant Sandbox as 调用方沙箱
-    participant MCP as ThreatWeave MCP
-    participant Java as Java CRUD
-    participant B as B 抽取 Agent
-
-    Caller->>Flow: mode + 目标文章或来源
-    Flow->>Sandbox: 同步并读取 A/B 所需 /skills/
-    alt 目标是来源或 URL
-        Flow->>Fetch: 校验来源并抓取文章
-        Fetch-->>Flow: 初步清洗后的文章草稿
-        Flow->>Flow: 按篇数和字符预算分批
-        loop 当前批次每篇文章
-            Flow->>Flow: 签发单篇文档写入授权
-            Flow->>A: 草稿正文 + 当前文章授权
-            A->>A: 深度去噪、结构恢复
-            A->>MCP: threat_document_upsert(授权, 正文)
-            MCP->>Java: 写入规范文档
-            Java-->>MCP: document_id + content_sha256
-            MCP-->>A: 写入确认
-        end
-    end
-    opt 模式需要抽取
-        Flow->>B: document_id + PREVIEW 或 COMMIT 指令
-        B->>MCP: 读取、校验、保存草稿或提交抽取
-        MCP->>Java: 仅 COMMIT 写入图谱
-        Java-->>MCP: 写入结果
-    end
-    Flow-->>Caller: 每篇文章的完成、跳过和失败摘要
-```
-
-工作流在返回前等待 A/B 完成；它的结构化摘要才是格式化、预览或入库状态的依据。
-
-### 6.4 A 的最终格式化和写入
-
-`intel_ingestor` 必须先从调用方沙箱 `/skills/` 读取 `intel-ingestion` Skill。它逐篇完成：
-
-- 去除广告、导航、推荐阅读、版权声明、联系方式和无关页面文字；
-- 去除乱码和明显重复内容；
-- 恢复混乱的标题、段落、列表和表格；
-- 保留正文中的完整威胁情报事实，不概括补充、不编造结论；
-- 使用当前文章的一次性写入授权；
-- 调用 `threat_document_upsert` 写入最终正文。
-
-工作流授权绑定 `doc_key`、来源、URL 和发布时间；A 只提交格式化后的正文和可选标题。MCP 根据最终正文计算 `content_sha256`。同一 `doc_key` 再次写入时覆盖文档内容和元数据；如果正文发生变化，Java 服务删除旧 provenance，避免旧字符偏移指向新正文。
-
-工作流在 Java 确认规范文档后决定是否调用 B。A 不提交 B；B 失败时保留规范文档并仅重试 B，正文 hash 变化时将旧抽取标记为过期。
-
-## 7. 实体、关系和出处抽取
-
-### 7.1 B 的处理流程
-
-`entity_relation_extractor` 先从调用方沙箱 `/skills/` 读取自己的 Skill，再使用 `threat_document_get` 分块读取正文。长文档按顺序切块，模型逐块建立候选，在全部块处理完后统一调用校验和写入。
+### 3.3 业务流程
 
 ```mermaid
 flowchart TD
-    DOC["规范文档 document_id"] --> READ["按 chunk_index 读取完整正文"]
-    READ --> MODEL["B 建立实体与关系候选"]
-    MODEL --> EVIDENCE["每项提供唯一精简 evidence"]
-    EVIDENCE --> VALIDATE["validate_extraction_evidence"]
-    VALIDATE -->|"拒绝"| FIX["最多修正一次"]
-    FIX --> VALIDATE
-    VALIDATE -->|"通过"| MODE{"工作流模式"}
-    MODE -->|"PREVIEW"| PREVIEW["保存用户草稿<br/>不写图谱"]
-    MODE -->|"COMMIT，无草稿"| WRITE["再次校验后写入"]
-    MODE -->|"COMMIT，有草稿"| RECHECK["校验正文 hash 与草稿"]
-    RECHECK --> WRITE
-    WRITE --> TX["Java 事务：实体、关系、出处"]
+    START["run_intelligence_workflow"] --> MODE{"工作流模式"}
+    MODE -->|"list_processing"| LIST["读取 workflow 状态<br/>不触发模型和采集"]
+    MODE -->|"extract_pending"| PENDING["读取 formatting=completed<br/>且 extraction 未完成的文档"]
+    MODE -->|"source_id / article_url"| COLLECT["来源校验与采集"]
+    MODE -->|"document_ids"| EXISTING["从 Java 读取已有规范文档"]
+
+    COLLECT --> BATCH["按最多 3 篇、最多 24,000 字符分批"]
+    BATCH --> A["A 深度格式化"]
+    A --> UPSERT["MCP + Java upsert documents"]
+    UPSERT --> CONFIRM["按 doc_key 重新读取并确认正文 hash"]
+    EXISTING --> CONFIRM
+    PENDING --> B["B COMMIT"]
+    CONFIRM --> MODE2{"是否需要抽取"}
+    MODE2 -->|"否"| OUTPUT["返回摘要/交付件"]
+    MODE2 -->|"PREVIEW"| BPREVIEW["B 校验并保存 workflow 草稿"]
+    MODE2 -->|"COMMIT"| B
+    BPREVIEW --> OUTPUT
+    B --> CHECK["校验 evidence 唯一性和字段"]
+    CHECK --> WRITE["Java 事务写 entities/aliases/relations/provenance"]
+    WRITE --> OUTPUT
+    LIST --> OUTPUT
 ```
 
-模型只提交 `evidence` 文本，不提交字符位置。Python MCP 在完整格式化正文中查找该引文，要求它非空且唯一出现，然后生成 `charStart`、`charEnd` 和固定 `extractor`。不存在、重复或不匹配的 evidence 会被拒绝。
+工作流本身控制调用顺序和状态迁移，模型不能通过自然语言改变模式、文档身份或写库目标。
 
-### 7.2 实体与关系范围
+### 3.4 交付件请求规则
 
-实体类型、关系类型和语义角色以凿定决策为准。当前实体类型包括：
+同步工作流只在请求明确包含以下类型时生成文件：
+
+- `formatted_markdown`：从 Java 已确认的规范正文生成清洗后 Markdown；
+- `extraction_markdown`：从 Java 已确认的实体、关系和 evidence 生成抽取结果 Markdown。
+
+定时采集使用 `actor_id=system-scheduler`，不会生成用户交付件。普通处理、预览和入库也不会自动生成文件。
+
+## 4. 情报来源与采集
+
+### 4.1 来源配置
+
+来源配置位于：
+
+```text
+src/agent/skills/subagents/intel_ingestor/
+└── intel-ingestion/sources/
+    ├── cncert_cc.yaml
+    └── hillstone_hot_threat.yaml
+```
+
+`src/intel_ingestor/sources.py` 只接受已登记、已启用且声明许可说明的来源。配置至少包含 `source_id`、入口地址、解析器类型、文章 URL 正则、最低间隔和许可证说明。调用方不能把任意 URL 临时伪装成来源。
+
+当前来源：
+
+| `source_id` | 入口 | 解析器 | 关键适配逻辑 |
+| --- | --- | --- | --- |
+| `cncert_cc_threat_warning` | CNCERT/CC 威胁预警栏目 | `cncert_cc_listing_html` | 列表页从 `onclick` 发现文章 URL，正文通过 `div.artil_content` 提取。 |
+| `hillstone_hot_threat` | Hillstone 热点威胁详情 URL | `hillstone_hot_threat_json` | 将 SPA 详情 URL 的 `id` 填入公开 `api/report/hot-threat/advice/detail` JSON 接口。 |
+
+### 4.2 采集器的确定性职责
+
+`src/intel_ingestor/ingestor.py`、`fetcher.py` 和 `cleaner.py` 只做可测试的机械处理：
+
+1. 校验来源和文章 URL；
+2. 抓取列表页、详情页或来源指定的详情 API；
+3. 发现文章引用并解析绝对 URL；
+4. 修复声明错误或不完整的字符编码；
+5. 提取配置指定的正文、标题和日期；
+6. 对 HTML 删除脚本、样式、表单和明确页面容器，保留标题、段落、列表、表格和文本；
+7. 对 Hillstone JSON 将摘要、详细内容、受影响系统、标签、IOC、参考链接、防护建议和事件范围转换为 Markdown 草稿；
+8. 生成不依赖正文内容的稳定 `doc_key`；
+9. 将 `preliminary_content` 交给 A 做语义层面的深度整理。
+
+采集器不负责判断广告、恶意性、实体类型或关系语义，也不直接写 PostgreSQL。
+
+### 4.3 `doc_key` 和幂等
+
+`doc_key = SHA256(source_id + ":" + external_id)`；来源没有稳定外部 ID 时退化为 `SHA256(source_id + ":" + url)`。例如 Hillstone 的 `id=4715` 会作为 `external_id`，所以详情内容更新时仍命中同一文档。
+
+Java 以 `doc_key` 唯一键执行 upsert。正文改变时，旧的 provenance 会被删除，避免字符偏移继续指向旧正文；工作流随后把抽取状态标记为需要重新处理。
+
+### 4.4 A 的深度格式化
+
+`intel_ingestor` 的 Skill 和 YAML 配置位于 `src/agent/subagents/`。A 必须：
+
+- 去除广告、导航、推荐、页脚、联系方式、乱码和重复片段；
+- 恢复标题、段落、列表和表格结构；
+- 保留原文完整情报事实，不摘要、不擅自补充结论；
+- 使用工作流针对单篇文章签发的一次性 `access_token` 调用 `threat_document_upsert`；
+- 只有工作流明确要求时才调用 `write_deliverable` 导出 Markdown。
+
+A 不抽取实体和关系，不判断 IOC 是否恶意，不启动 B，也不自行抓取其他来源。
+
+## 5. 实体、关系和证据抽取
+
+### 5.1 B 的处理方式
+
+B 使用 `threat_document_get` 按正文顺序分块读取文档，默认每块最多 8,000 字符。模型逐块提出候选，代码负责统一字段规范化、evidence 校验、去重和写入。
+
+```mermaid
+flowchart TD
+    DOC["document_id + content_sha256"] --> READ["按 chunk_index 读取正文<br/>每块最多 8,000 字符"]
+    READ --> CANDIDATE["B 提取实体、关系、语义角色和 evidence"]
+    CANDIDATE --> VALIDATE["validate_extraction_evidence"]
+    VALIDATE -->|"evidence 无法唯一定位"| RETRY["最多修正一次"]
+    RETRY --> VALIDATE
+    VALIDATE -->|"通过"| BRANCH{"模式"}
+    BRANCH -->|"PREVIEW"| DRAFT["保存用户隔离的 JSON 草稿"]
+    BRANCH -->|"COMMIT 无草稿"| WRITE["threat_extraction_write"]
+    BRANCH -->|"COMMIT 有草稿"| RECHECK["校验草稿用户、正文 hash 和有效期"]
+    RECHECK --> WRITE
+    WRITE --> TX["Java 单事务写入实体、别名、关系和出处"]
+```
+
+### 5.2 当前值域
+
+实体类型：
 
 ```text
 ipv4, ipv6, domain, url, file_hash, cve,
 threat_actor, malware, campaign, attack_technique, tool, organization
 ```
 
-关系类型包括：
+语义角色：
+
+```text
+malicious_infrastructure, victim, research, unknown
+```
+
+关系类型：
 
 ```text
 USES, ATTRIBUTED_TO, INDICATES, RESOLVES_TO,
 TARGETS, EXPLOITS, COMMUNICATES_WITH
 ```
 
-语义角色包括：
+B 只能写入规范文档明确支持的关系。实体共同出现不等于存在关系；网络搜索可以辅助消歧，但搜索结果不是 provenance，也不能扩大原文事实范围。
 
-```text
-malicious_infrastructure, victim, research, unknown
-```
+### 5.3 evidence 校验
 
-B 只能写入格式化原文明确支持的关系，不能因为两个实体共同出现就推导关系。网络搜索可以帮助名称消歧或理解背景，但不能扩大原文事实范围，也不能成为 provenance 的 evidence。
+模型只提交精简 `evidence` 文本，不提交字符偏移。MCP 在完整规范正文中查找该文本，要求：
 
-### 7.3 校验和写入
+- 非空；
+- 在正文中恰好出现一次；
+- 通过后由代码生成 `charStart` 和 `charEnd`；
+- 写入时 Java 再次确认 `document.content.substring(charStart, charEnd)` 与 `evidenceQuote` 完全相等。
 
-`threat_extraction_write` 会再次读取文档并重复执行候选校验，防止模型绕过独立校验工具。`PREVIEW` 与草稿 `COMMIT` 使用工作流签发的一次性授权，模型不能指定其他用户或草稿。通过后调用 Java `/api/threatweave/extractions`，Java 服务在单个事务中：
+无法定位、重复出现或字段不合规的候选会被拒绝；Java 事务不会写入未通过校验的事实。
 
-1. upsert 实体；
-2. 写入别名并按唯一键去重；
-3. 找到关系两端实体并 upsert 关系；
-4. 校验证据字符范围和引文正文匹配；
-5. 写入 provenance 并按唯一约束去重。
+### 5.4 预览草稿和正式入库
 
-任何业务异常都会回滚本次抽取写入。重复处理同一文档不会制造重复实体、关系或出处。
+- `extract_preview`：草稿写入 `workflow.extraction_drafts`，带用户、文档 ID、正文 hash 和过期时间；不会写 `threatweave.entities`、`relations` 或 `provenance`。
+- `ingest_full` / `extract_pending`：没有有效草稿时由 B 直接写入；存在当前用户和当前正文对应的草稿时，使用一次性授权提交草稿，不从 Markdown 或模型回复重建数据。
+- 正文 hash 变化、草稿过期、用户不匹配或文档不存在时，草稿不能提交。
 
-## 8. ThreatWeave Java CRUD 与 MCP
+## 6. Agent、Skill 与权限
 
-### 8.1 Java REST 接口
+### 6.1 Agent 职责
 
-Java 后端入口为 `com.threatweave.threatweave.ThreatWeaveController`，基础路径为 `/api/threatweave`：
+| Agent | 执行方式 | 可访问工具或数据 | 不允许做什么 |
+| --- | --- | --- | --- |
+| 主 Agent | FastAPI 进程内按用户复用 | 公共搜索、补充信息、异步任务、同步工作流入口 | 不直接读写 ThreatWeave 业务表。 |
+| `intelligence_workflow_orchestrator` | 主 Agent 的同步子 Agent | `run_intelligence_workflow`、`list_intelligence_processing` | 不自行调用 A、B、Java、MCP 或异步 C。 |
+| `intel_ingestor`（A） | 工作流内部同步等待 | `threat_document_upsert`、`write_deliverable` | 不抽取实体关系，不提交其他任务。 |
+| `entity_relation_extractor`（B） | 工作流内部同步等待 | 文档读取、evidence 校验、预览/写入、草稿提交、可选导出 | 不采集新文章，不做威胁分析。 |
+| `threat_analyst`（C） | Agent Protocol 异步 | `threat_graph_query`、`generate_network_graph_html`、`write_deliverable` | 不写业务表，不修改文档、实体、关系或出处。 |
 
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| `POST` | `/documents` | A 写入或覆盖格式化文档。 |
-| `GET` | `/documents/{documentId}` | B 读取格式化文档。 |
-| `GET` | `/documents/by-key` | 工作流确认 A 写入的规范文档。 |
-| `POST` | `/extractions` | B 写入实体、关系和出处。 |
-| `GET` | `/graph` | C 查询实体和关系子图。 |
+### 6.2 Skill 同步边界
 
-Java 只提供受控业务 CRUD，不处理 Agent 编排和模型调用。`ThreatWeaveSchemaInitializer` 在启动时创建 `threatweave` schema 和索引。
-
-### 8.2 MCP 工具权限
-
-`src/mcp_server/tools/threatweave_tools.py` 注册七个业务工具：
-
-| 工具 | 使用者 | 作用 |
-| --- | --- | --- |
-| `threat_document_upsert` | A | 用工作流签发的一次性授权写入最终格式化文档，MCP 固定来源身份并计算内容哈希。 |
-| `threat_document_get` | B | 按字符预算读取正文分块。 |
-| `validate_extraction_evidence` | B | 校验候选字段和唯一 evidence。 |
-| `threat_extraction_write` | B | 再次校验后事务性写入抽取结果。 |
-| `threat_extraction_preview` | B | 用一次性授权保存当前用户的结构化抽取草稿，不写图谱。 |
-| `commit_extraction_draft` | B | 用一次性授权再次校验并提交有效草稿。 |
-| `threat_graph_query` | C | 只读查询图谱。 |
-
-实际装配由内部运行器和 `async_registry.py` 按子 Agent 选择工具。A 不获得图谱查询，B 不获得文档 upsert，C 不获得任何写库工具。
-
-### 8.3 MCP HTTP 边界
-
-MCP 使用 Streamable HTTP，生命周期中创建复用的 `httpx.AsyncClient`，通过 `JAVA_API_BASE_URL` 请求 Java 后端。业务错误转换为安全的工具异常，不把响应中的密码、token 或内部调试正文传给模型。
-
-## 9. 威胁分析与交付件
-
-### 9.1 C 的分析流程
-
-`threat_analyst` 开始前从用户沙箱 `/skills/` 读取 `threat-analysis` Skill，然后：
-
-1. 根据用户问题确定查询范围、起点和限制。
-2. 使用 `threat_graph_query` 查询实体、关系和可用证据。
-3. 必要时沿有证据的关系扩展一跳，不重复相同查询。
-4. 把库内事实、网络背景和模型推断分开表达。
-5. 按用户请求生成 HTML 图、Markdown 报告，或只在聊天中返回结果。
-
-若有效查询第一次就返回空的 entities 和 relations，C 停止后续查询。用户要求图时生成空图，用户要求报告时生成“当前没有可分析实体或关系”的报告。
-
-### 9.2 HTML 图
-
-用户要求 HTML 图时，C 优先调用配置的 Charts MCP `generate_network_graph_html`；不可用或无返回时使用本地 `build_threat_graph_html`。生成的 HTML 由 C 使用 `write_deliverable` 写入用户沙箱 `/deliverables/`，工具返回结构化交付声明，后端据此登记下载信息。
-
-图中只放当前查询支持的节点和边，不为视觉效果添加无证据关系。图不是 ThreatWeave 业务表中的一部分。
-
-### 9.3 Markdown 报告
-
-用户明确要求 Markdown 报告时，C 使用 `write_deliverable` 写入 `/deliverables/`。报告应包含分析范围、库内证据、主要关联、风险判断、外部背景、限制和下一步建议，并清楚区分事实与推断。
-
-A、B 的 Markdown 导出同样是单独的用户任务，不会因为处理成功自动生成。导出文件与分析报告共用交付件登记和下载接口。
-
-## 10. C 异步分析与定期采集
-
-### 10.1 主 Agent 提交任务
-
-主 Agent 可使用异步任务工具提交已注册图，工具会创建 Agent Protocol thread/run，并将任务绑定到当前主会话。前端收到任务 ID 后显示委派卡片，不把提交回执误认为最终结果。
-
-可用任务操作包括：
-
-- `start_async_task`：启动 C 的深度分析、图谱或报告任务；A、B 与编排器通过同步子 Agent 调用；
-- `check_async_task`：读取远程任务状态和最终结果；
-- `list_async_tasks`：列出当前会话可见任务；
-- `cancel_async_task`：取消任务。
-
-这些工具属于主 Agent 的通用异步能力，不能删除或用一次性 HTTP 请求替代。
-
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant M as 主 Agent
-    participant P as Agent Protocol
-    participant C as threat_analyst
-    participant G as 图谱查询
-    participant S as 用户沙箱
-
-    U->>M: 请求分析、HTML 图或 Markdown 报告
-    M->>P: start_async_task(threat_analyst)
-    P-->>M: 任务已创建
-    M-->>U: 返回任务提交状态
-    P->>C: 异步执行分析
-    C->>G: 只读查询实体、关系和出处
-    opt 用户要求交付件
-        C->>S: 写入 HTML 或 Markdown
-    end
-    C-->>P: 最终分析结果与交付件信息
-    P-->>U: 前端轮询后展示最终结果
-```
-
-### 10.2 状态查询和投递
-
-`src/api/async_tasks.py` 通过 Agent Protocol 查询远程 run，归一化状态、错误、最终文本和交付件。任务进入终态后，只有在父会话不忙且未被中断时，结果才写回父会话；父会话已删除时不会被迟到结果重新创建。
-
-接口为：
-
-```text
-GET /async-tasks/{task_id}
-```
-
-前端使用带取消能力的轮询器等待终态，切换会话或组件卸载时清理定时器和请求。任务失败会显示错误并保留可重试的状态；查询重试不会重新创建原任务。
-
-### 10.3 定期调度
-
-`src/scheduler/runner.py` 读取唯一的 `cncert_cc.yaml`，按 `minimum_interval_seconds` 直接等待：
-
-```text
-IntelligenceWorkflow(mode=ingest_full)
-actor_id = system-scheduler
-max_articles = 3
-```
-
-调度器在后台等待完整工作流。失败按 `THREATWEAVE_SCHEDULER_RETRY_SECONDS` 延迟重试；成功完成后等待来源的最低间隔。它不使用普通用户会话或记忆，但会持久化取得 `system-scheduler` 专用 OpenSandbox，供 A/B 同步 Skill 并在沙箱内执行。
-
-调度器不监听端口。工作流持久化每篇文档的格式化和抽取状态：A 成功而 B 失败时，下次运行可复用规范文档，仅重试 B；完整工作流成功才解释为业务链路完成。
+仓库 `src/agent/skills/` 是版本控制下的同步源。运行时由 `SandboxSkillsMiddleware` 和 `SandboxSkillSynchronizer` 将所需目录增量同步到 OpenSandbox 的 `/skills/`；Agent 只读取沙箱副本，不直接读取宿主机 Skill 文件。
 
 ```mermaid
 flowchart LR
-    CONFIG["来源 YAML<br/>最低抓取间隔"] --> SCHEDULER["后台调度器"]
-    SCHEDULER --> SYSTEM_SB["system-scheduler 沙箱<br/>同步 /skills/"]
-    SYSTEM_SB --> FLOW["INGEST_FULL<br/>system-scheduler"]
-    FLOW -->|"成功"| WAIT["等待来源最低间隔"]
-    FLOW -->|"失败"| RETRY["等待重试间隔"]
-    WAIT --> SCHEDULER
-    RETRY --> SCHEDULER
+    REPO["src/agent/skills/<br/>版本控制同步源"] --> SYNC["SandboxSkillSynchronizer"]
+    SYNC --> USER["用户沙箱 /skills/"]
+    SYNC --> SYSTEM["system-scheduler 沙箱 /skills/"]
+    USER --> MAIN["主 Agent / A / B / C"]
+    SYSTEM --> SCHED["定时采集 A / B"]
 ```
 
-## 11. HTTP 请求、会话历史和前端
+用户沙箱负责用户 Agent 文件和 `/deliverables/`；系统调度使用独立 `system-scheduler` 沙箱，不共享普通用户的文件、会话和记忆。
 
-### 11.1 API 路由
+## 7. 持久化与数据模型
 
-聊天、历史、异步任务和资源接口由 `src/api/chat.py` 注册：
+### 7.1 PostgreSQL 分区
 
-| 方法 | 路径 | 用途 |
+| 区域 | 主要内容 | 创建或使用代码 |
 | --- | --- | --- |
+| `auth` | `users`、`sessions`、PBKDF2 密码 hash、会话 hash 和过期时间 | `src/api/auth.py` 首次需要认证时幂等创建。 |
+| LangGraph Store | 用户记忆、会话索引、异步任务绑定、沙箱绑定、沙箱交付件元数据 | `src/agent/config.py`、`api/agent_loader.py`。 |
+| LangGraph Checkpointer | thread 消息、工具调用、执行状态和中断 | LangGraph PostgreSQL Checkpointer。 |
+| `workflow` | `document_processing`、`extraction_drafts`、两类一次性授权 | `src/intelligence_workflow/repository.py`。 |
+| `threatweave` | documents、entities、entity_aliases、relations、provenance | `ThreatWeaveSchemaInitializer` 启动时幂等创建。 |
+
+```mermaid
+flowchart LR
+    AUTH["auth<br/>账号和 Cookie 会话"]
+    STORE["LangGraph Store<br/>记忆、会话索引、任务、沙箱元数据"]
+    CHECK["LangGraph Checkpointer<br/>消息和执行状态"]
+    FLOW["workflow<br/>处理状态、草稿、一次性授权"]
+    INTEL["threatweave<br/>规范文档、图谱、出处"]
+
+    API["FastAPI"] --> AUTH
+    API --> STORE
+    API --> CHECK
+    WF["IntelligenceWorkflow"] --> FLOW
+    MCP["ThreatWeave MCP"] --> JAVA["Java CRUD"]
+    JAVA --> INTEL
+```
+
+这些区域用途不同，不能互相替代：Checkpointer 不是情报库，Store 不是交付件文件系统，`workflow` 状态也不是 Java 业务事实。
+
+### 7.2 ThreatWeave 核心表
+
+| 表 | 关键字段和约束 |
+| --- | --- |
+| `documents` | `doc_key` 唯一；保存来源、URL、标题、发布时间、规范正文和 `content_sha256`。 |
+| `entities` | `(entity_type, canonical_value)` 唯一；保存展示名、语义角色、置信度和观察时间。 |
+| `entity_aliases` | 绑定实体的别名，`(entity_id, alias)` 唯一。 |
+| `relations` | 源实体、目标实体和关系类型唯一；禁止自环。 |
+| `provenance` | 一条记录只指向实体或关系之一，保存 evidence、字符范围、抽取器和置信度。 |
+
+Java 的 schema 初始化器还创建按来源、实体、别名、关系和 provenance 查询所需的索引。项目没有独立迁移目录，表结构由启动时的幂等 DDL 管理。
+
+### 7.3 会话、身份和并发
+
+- 登录 Cookie 名为 `myagent_session`，有效期 7 天；数据库只保存 Cookie 的 SHA-256 摘要。
+- 密码使用随机盐 PBKDF2-SHA256，当前迭代次数为 600,000。
+- 业务接口通过 `get_current_user` 从 Cookie 取得身份；请求体中的 `user_id` 不能改变资源归属。
+- 同一用户的多个 `thread_id` 共享当前进程内 Agent 实例，但使用独立 Checkpointer 状态。
+- `AgentLoader` 的会话写入互斥只覆盖单个 FastAPI 进程，当前部署模型是单 worker；跨重启恢复依赖 PostgreSQL。
+- 删除会话时会删除 checkpoint 和会话索引；不会主动取消已创建的远程 C 任务，迟到结果也不会重新创建已删除会话。
+
+## 8. Java REST 与 ThreatWeave MCP
+
+### 8.1 Java REST 接口
+
+基础路径：`/api/threatweave`。
+
+| 方法 | 路径 | 使用者 | 作用 |
+| --- | --- | --- | --- |
+| `POST` | `/documents` | A | 按 `doc_key` upsert 规范文档并返回文档信息。 |
+| `GET` | `/documents/{documentId}` | B | 读取规范文档；MCP 再按字符预算切块。 |
+| `GET` | `/documents/{documentId}/extraction` | B/导出 | 读取 Java 已确认的实体、关系及 provenance。 |
+| `GET` | `/documents/by-key?docKey=...` | 工作流 | 确认 A 已写入的文档。 |
+| `POST` | `/extractions` | B | 事务性写入实体、别名、关系和出处。 |
+| `GET` | `/graph?query=...&documentIds=...&limit=...` | C | 只读查询图谱子集，`limit` 为 1 到 500。 |
+
+Java 只负责业务 CRUD 和事务，不负责模型调用、Agent 编排、用户会话或交付件登记。
+
+### 8.2 当前 8 个 MCP 工具
+
+| 工具 | 权限 | 作用 |
+| --- | --- | --- |
+| `threat_document_upsert` | A | 消费一次性格式化授权，固定文档身份并写入正文。 |
+| `threat_document_get` | B | 按 `chunk_index` 读取最多 8,000 字符的正文块。 |
+| `threat_extraction_get` | B | 读取既有抽取结果，主要用于导出 Markdown。 |
+| `validate_extraction_evidence` | B | 独立校验实体、关系字段和值域及唯一 evidence。 |
+| `threat_extraction_write` | B | 再次校验后调用 Java 事务写入。 |
+| `threat_extraction_preview` | B | 校验并保存用户隔离的结构化草稿，不写图谱。 |
+| `commit_extraction_draft` | B | 校验正文 hash 和草稿归属后提交草稿。 |
+| `threat_graph_query` | C | 只读查询实体和关系，可按文档 ID 限定范围。 |
+
+MCP 通过 Streamable HTTP 访问 Java。工具选择不是“连接到 MCP 就拥有全部权限”，而是每个子 Agent YAML 明确声明所需工具后再装配。
+
+## 9. 异步威胁分析与交付件
+
+### 9.1 C 的分析链路
+
+`src/agent/subagents/async_registry.py` 只注册 `threat_analyst_async`。C 的典型流程是：
+
+1. 读取 `threat-analysis` Skill；
+2. 调用 `threat_graph_query` 查询库内实体、关系和证据；
+3. 必要时基于证据扩展有限关联；
+4. 将库内事实、外部背景和模型推断分开表述；
+5. 用户明确要求 HTML 图时调用 `generate_network_graph_html`；
+6. 用户明确要求 Markdown 报告时调用 `write_deliverable`；
+7. 结束后由 FastAPI 登记交付件并写回父会话。
+
+HTML 图生成器要求 Charts MCP 返回 HTML，并执行离线可见性检查；当前代码不会在 Charts MCP 不可用时偷偷伪造成功结果。没有可分析的图谱数据时，C 应说明限制，而不是添加没有证据的边。
+
+### 9.2 交付件生命周期
+
+```mermaid
+sequenceDiagram
+    participant A as A/B/C
+    participant S as 用户 OpenSandbox
+    participant R as DeliverableRegistry
+    participant P as PostgreSQL Store
+    participant U as 前端
+
+    A->>S: write_deliverable 写入 /deliverables/文件
+    A-->>R: 返回受控 path、filename、MIME、label
+    R->>P: 登记 user_id、artifact_id 和元数据
+    P-->>U: 返回下载/预览入口
+    U->>P: Cookie 身份校验
+    P->>S: 按登记 path 读取文件
+    S-->>U: 文件内容
+```
+
+`write_deliverable` 只允许 Markdown、HTML、JSON，文件名只允许 ASCII 字母、数字、点、下划线和连字符，正文限制为 4 MiB 以内 UTF-8 文本，路径固定在 `/deliverables/` 根目录。
+
+同步 A/B 由工作流写入并立即登记；异步 C 的结果在 `GET /async-tasks/{task_id}` 首次读取终态时登记。下载接口使用当前 Cookie 用户校验 artifact 归属，不以客户端传入的 `user_id` 作为授权依据。
+
+### 9.3 Markdown 和 HTML 的来源
+
+| 文件 | 生成方式 | 内容来源 |
+| --- | --- | --- |
+| 清洗后 Markdown | `format_only + formatted_markdown` | Java 已确认的 `documents.content`，不是 A 的未确认文本。 |
+| 抽取结果 Markdown | `extraction_markdown` | Java `/documents/{id}/extraction` 返回的实体、关系和 provenance。 |
+| HTML 关系图 | C 调用 Charts MCP 后再 `write_deliverable` | 当前查询返回的节点和有证据的边。 |
+| 普通分析报告 | C 调用 `write_deliverable` | C 的分析结论，必须区分事实、背景和推断。 |
+
+历史消息可能还包含旧的 `chart_artifact` 资源引用。`/visualizations/{artifact_id}` 是兼容和本地缓存入口；当前用户文件下载应优先走 `/deliverables/{artifact_id}`。
+
+## 10. HTTP、SSE 和前端
+
+### 10.1 FastAPI 路由
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/auth/captcha` | 获取注册验证码图片。 |
+| `POST` | `/auth/register` | 校验验证码、创建账号并建立 Cookie 会话。 |
+| `POST` | `/auth/login` | 登录并建立 Cookie 会话。 |
+| `GET` | `/auth/me` | 查询当前用户。 |
+| `POST` | `/auth/logout` | 删除会话并清理 Cookie。 |
+| `GET` | `/auth/health` | 认证健康检查。 |
 | `POST` | `/chat` | 非流式聊天。 |
 | `POST` | `/chat/stream` | SSE 流式聊天。 |
 | `POST` | `/chat/{thread_id}/resume` | 恢复信息补充或人工审批中断。 |
 | `POST` | `/history` | 创建空会话。 |
 | `GET` | `/history` | 列出当前用户会话。 |
-| `GET` | `/history/{thread_id}/messages` | 恢复会话消息和任务信息。 |
-| `DELETE` | `/history/{thread_id}` | 删除当前用户空闲会话。 |
-| `GET` | `/visualizations/{artifact_id}` | 打开或下载本地图表 artifact。 |
-| `GET` | `/deliverables/{artifact_id}` | 下载或受限预览沙箱交付件。 |
+| `GET` | `/history/{thread_id}/messages` | 恢复会话消息和交付件入口。 |
+| `DELETE` | `/history/{thread_id}` | 删除当前用户会话。 |
+| `GET` | `/async-tasks/{task_id}` | 查询 C 的异步任务状态和终态结果。 |
+| `GET` | `/deliverables/{artifact_id}` | 下载交付件；HTML 带 `preview=1` 时受限预览。 |
+| `GET` | `/visualizations/{artifact_id}` | 兼容旧图表资源，带 `download=1` 时下载。 |
 
-### 11.2 SSE 事件
+### 10.2 SSE 事件
 
-前端 `frontend/src/api/chat.js` 读取 SSE，`App.vue` 根据事件更新消息状态：
+`src/api/chat.py` 统一输出以下事件：
 
-- `token`：追加助手文本；
-- `tool_start`：创建工具或委派占位；
-- `tool_args`：累积工具参数；
-- `tool_result`：写入工具返回；
-- `tool_end`：结束普通工具状态；
-- `interrupt`：显示补充信息或人工审批面板；
-- `done`：保存会话 ID 并结束本轮；
-- `error`：显示安全错误并结束异常状态。
-
-同步子 Agent 的内部消息不会直接展示。异步任务只先显示提交状态，终态结果由 `/async-tasks/{task_id}` 查询并补充到委派卡片。
-
-### 11.3 会话历史
-
-会话索引存储在 LangGraph Store 的 `("sessions", user_id)` 命名空间，完整消息和执行状态存储在 Checkpointer。创建、列表、读取和删除会话都先校验 Cookie 身份与会话归属。
-
-打开会话时，`ThreadHistoryReader` 只读恢复 checkpoint，不调用模型、不调用沙箱、不重新执行工具。历史转换逻辑会恢复中断信息、异步任务状态、HTML 图和用户交付件入口。
-
-删除会话时，后端先获取会话操作 guard 并复查归属，再删除 checkpoint、会话索引和进程内 thread 记录。删除不会自动取消远程 Agent Protocol 任务；迟到任务结果会因父会话不存在而被丢弃。
-
-### 11.4 前端组件
-
-| 组件 | 职责 |
+| 事件 | 前端行为 |
 | --- | --- |
-| `App.vue` | 维护认证、当前会话、SSE、异步轮询、队列和页面级状态。 |
-| `AuthView.vue` | 注册、登录和验证码。 |
-| `ChatArea.vue` | 消息列表和滚动。 |
-| `InputArea.vue` | 输入和发送。 |
-| `InterruptPanel.vue` | 信息补充和人工审批。 |
-| `MessageItem.vue` | Markdown、工具、委派、图表和报告入口。 |
-| `markdown.js` | 使用 marked 解析并用 DOMPurify 清洗 Markdown。 |
-| `chatState.js` | 处理前端消息状态和任务状态转换。 |
+| `token` | 追加主 Agent 文本。 |
+| `tool_start` | 创建工具或委派占位卡片。 |
+| `tool_args` | 显示工具调用参数。 |
+| `tool_result` | 保存工具返回和可交付件元数据。 |
+| `tool_end` | 结束工具状态。 |
+| `interrupt` | 显示补充信息或人工审批面板。 |
+| `done` | 保存 thread ID，结束本轮流式请求。 |
+| `error` | 显示脱敏错误并结束本轮。 |
 
-页面使用 ThreatWeave 深色控制台主题。图表 HTML 通过独立资源入口打开，不直接插入聊天 DOM；Markdown、链接和图片使用前端白名单规则清洗。
+前端不会把原始沙箱路径直接展示给用户。消息工具结果中的 artifact 声明会转换为当前用户可访问的下载 URL；Markdown 由 `marked` 解析后经 DOMPurify 白名单清洗。
 
-## 12. 关键对象关系总览
+### 10.3 异步任务状态
 
-### 12.1 核心对象
+主 Agent 提交 C 后只返回任务提交状态。前端使用可取消的轮询器调用 `/async-tasks/{task_id}`，在任务进入终态且父会话空闲时，后端以固定消息 ID 幂等写回结果。切换会话、组件卸载或取消请求时，前端清理定时器和 AbortController。
+
+任务失败、超时、取消或超过 Agent 工具调用上限时，不应被伪装成“报告已生成”。图表-only 请求即使没有 Markdown 也可以成功；明确要求报告但没有 Markdown 交付件时，任务会被标记为失败。
+
+### 10.4 关键前端组件
+
+| 文件 | 职责 |
+| --- | --- |
+| `frontend/src/App.vue` | 登录、会话切换、SSE、轮询、队列和页面级状态。 |
+| `components/AuthView.vue` | 注册、登录、验证码。 |
+| `components/ChatArea.vue` | 消息列表、滚动位置和新消息提示。 |
+| `components/MessageItem.vue` | 用户、助手、工具、委派、HTML 图和文件交付展示。 |
+| `components/InputArea.vue` | 输入、发送和取消。 |
+| `components/InterruptPanel.vue` | 补充信息和人工审批。 |
+| `api/chat.js` | SSE 解析和中断恢复。 |
+| `api/asyncTasks.js` | 异步任务查询和取消。 |
+| `utils/chatState.js` | 消息状态、交付件和任务状态归一化。 |
+| `utils/markdown.js` | Markdown 解析和 DOMPurify 清洗。 |
+
+## 11. 定时采集
+
+`src/scheduler/runner.py` 是独立后台进程，不监听 HTTP 端口。它当前读取 `cncert_cc.yaml`，以 `system-scheduler` 身份执行：
+
+```text
+IntelligenceWorkflowRequest(
+    mode="ingest_full",
+    actor_id="system-scheduler",
+    source_id="cncert_cc_threat_warning",
+    max_articles=3,
+)
+```
+
+成功后按来源 `minimum_interval_seconds` 等待，失败后按 `THREATWEAVE_SCHEDULER_RETRY_SECONDS` 重试；使用系统专用沙箱，不共享普通用户的会话、记忆和交付件。
 
 ```mermaid
-flowchart TD
-    USER["登录用户"] --> APP["frontend/App.vue"]
-    APP --> CHAT["api.chat"]
-    CHAT --> LOADER["AgentLoader"]
-    LOADER --> MAIN["DeepAgents 主 Agent"]
-    MAIN --> WORKFLOW["同步工作流子 Agent"]
-    WORKFLOW --> A["A / intel_ingestor"]
-    WORKFLOW --> B["B / entity_relation_extractor"]
-    MAIN --> TASKS["异步任务工具"]
-    TASKS --> PROTOCOL["Agent Protocol"]
-    PROTOCOL --> C["C / threat_analyst"]
-    A --> MCP["ThreatWeave MCP"]
-    B --> MCP
-    C --> MCP
-    MCP --> JAVA["ThreatWeaveController"]
-    JAVA --> DB[("PostgreSQL")]
-    LOADER --> STORE["LangGraph Store"]
-    LOADER --> CHECK["LangGraph Checkpointer"]
-    LOADER --> SB["SandboxManager"]
-    SB --> SANDBOX["用户 OpenSandbox"]
-    A --> SANDBOX
-    B --> SANDBOX
-    C --> DELIVER["/deliverables"]
-    DELIVER --> APP
+flowchart LR
+    YAML["来源 YAML<br/>enabled + minimum_interval_seconds"] --> LOOP["scheduler.runner"]
+    LOOP --> SB["system-scheduler 沙箱"]
+    SB --> WF["ingest_full 工作流"]
+    WF -->|"失败"| RETRY["等待重试间隔"]
+    WF -->|"成功"| WAIT["等待来源最低间隔"]
+    RETRY --> LOOP
+    WAIT --> LOOP
 ```
 
-### 12.2 主要对象职责
+当前启动器从 `.env` 读取 `THREATWEAVE_SCHEDULER_ENABLED`；本地开发建议关闭，避免启动项目时立即抓取来源。调度器不会生成用户可下载的 Markdown、HTML 或 JSON 文件。
 
-| 对象 | 主要职责 |
+## 12. 测试、排障与已知限制
+
+### 12.1 推荐验证顺序
+
+遇到问题时按边界逐层验证：
+
+1. 先确认 PostgreSQL、OpenSandbox、模型服务和端口；
+2. 再确认 Java 根路径、FastAPI `/`、Agent Protocol `/ok` 和 Vite `/`；
+3. 用 MCP 工具发现确认 Java MCP 已加载 8 个工具；
+4. 用已批准来源 URL 验证采集器是否得到非空 `preliminary_content`；
+5. 查看 `workflow.document_processing` 的格式化和抽取状态；
+6. 检查 Java `documents` 是否存在当前 `doc_key` 和正文 hash；
+7. 检查 B 工具结果中的 `rejected`、实体数、关系数和 provenance；
+8. 最后检查 `/deliverables/{artifact_id}` 的用户归属、MIME 和实际文件内容。
+
+### 12.2 常见现象
+
+| 现象 | 判断方式 | 处理建议 |
+| --- | --- | --- |
+| Java 根路径返回 404 | `18080` 已监听且启动器健康检查通过 | 这是未定义根路由的正常现象，改查实际 `/api/threatweave/...`。 |
+| MCP 普通 GET 返回 406 | MCP 日志已显示 Uvicorn running | Streamable HTTP 需要正确的请求头；不要仅凭 GET 406 判断服务失败。 |
+| Hillstone 得到空正文 | 查看抓取 URL 是否仍是 `/hotthreat/detail?id=...` | 应检查是否使用 `fetch_url_template` 指向公开 JSON 接口，以及 JSON 是否包含 `result`。 |
+| 文档已格式化但抽取未完成 | 查看 `workflow.document_processing` 的 `extraction_status` 和 `last_error` | 保留规范正文，使用 `extract_pending` 或针对文档 ID 重试 B。 |
+| evidence 大量被拒绝 | 检查 evidence 是否在规范正文中唯一出现 | 不手工填字符偏移；让 B 提供更短且唯一的原文引文。 |
+| 报告任务显示成功但没有文件 | 检查原始用户请求是否明确要求报告，以及 `write_deliverable` 工具结果 | 后端会拒绝“要求报告但没有 Markdown 交付件”的假成功。 |
+| HTML 图无法生成 | 检查 `MODELSCOPE_CHARTS_MCP_URL`、Charts MCP 返回是否为 HTML、查询是否有节点/边 | 当前实现不会用未声明的替代生成方式掩盖 Charts MCP 失败。 |
+| 下载 404 或无权访问 | 检查登录 Cookie、artifact 所属用户和 Store 元数据 | 不能用客户端 `user_id` 跨用户下载。 |
+| 重启后会话仍在但本地文件不在 | 会话和交付件元数据在 PostgreSQL，文件内容在用户沙箱 | 不要从项目 `runtime/` 查找用户交付件。 |
+
+### 12.3 当前边界和剩余风险
+
+- 来源配置仍是仓库内 YAML，没有前端来源管理台；新增、启用或停用来源需要同步配置和测试。
+- Java 请求模型有基础 Bean Validation，但完整值域主要由 PostgreSQL CHECK 和 MCP Python 校验共同保证；错误可能先表现为通用业务异常。
+- 调度器目前只读取 `cncert_cc.yaml`，即使 Hillstone 已支持用户请求，也不会自动调度 Hillstone。
+- C 的完整链路依赖 OpenSandbox、Charts MCP 和图谱中已有数据；服务启动成功不代表这三项都可用。
+- 当前 `AgentLoader` 的写入互斥是单进程范围，多 worker 部署前需要增加跨进程协调。
+- 本地 `runtime/visualizations/` 兼容资源有默认 7 天 TTL；用户沙箱 `/deliverables/` 的生命周期由沙箱和登记元数据管理，两者不是同一套清理机制。
+
+## 13. 代码导航
+
+| 想了解什么 | 从哪里开始 |
 | --- | --- |
-| `AgentLoader` | 初始化持久化和沙箱，按用户缓存主 Agent，维护会话、任务和交付件索引。 |
-| `SandboxManager` | 预热、创建、复连、续期和关闭用户沙箱。 |
-| `SandboxBackendProxy` | 保持 Agent 图中 backend 引用稳定，将操作转发到当前沙箱。 |
-| `IntelligenceWorkflow` | 确定性来源采集、批次切分、状态迁移及 A/B 调用顺序。 |
-| `intelligence_workflow_orchestrator` | 主 Agent 的同步任务入口，只调用工作流工具。 |
-| `intel_ingestor` | 深度格式化文档并写入规范文档。 |
-| `entity_relation_extractor` | 预览时保存结构化草稿，提交时写入实体、关系和 provenance。 |
-| `threat_analyst` | 只读查询并生成按需分析交付件。 |
-| `ThreatWeaveController` | 暴露 Java 文档、抽取和图谱 REST 接口。 |
-| `threatweave_tools.py` | 为 Agent 提供最小权限 MCP 工具。 |
-| `ThreadHistoryReader` | 从 checkpoint 恢复前端所需的会话状态。 |
-| `visualization_artifacts.py` | 管理本地图表文件和过期清理。 |
+| 启动和端口 | `start_web.py` |
+| 主 Agent 装配 | `src/agent/main_agent.py` |
+| 主 Agent 生命周期、会话和交付件登记 | `src/api/agent_loader.py` |
+| 工作流模式和状态 | `src/intelligence_workflow/schema.py`、`workflow.py`、`repository.py` |
+| 来源和正文初步清洗 | `src/intel_ingestor/sources.py`、`ingestor.py`、`cleaner.py` |
+| A/B 工作流工具 | `src/agent/tools/intelligence_workflow_tools.py` |
+| C 异步注册和入口 | `src/agent/subagents/async_registry.py`、`async_entry.py` |
+| MCP 工具和值域校验 | `src/mcp_server/tools/threatweave_tools.py`、`schema.py` |
+| Java 表结构和事务写入 | `ThreatWeaveSchemaInitializer.java`、`ThreatWeaveServiceImpl.java` |
+| 异步任务终态和交付件 | `src/api/async_tasks.py`、`src/services/deliverables.py` |
+| 前端交付件展示 | `frontend/src/components/MessageItem.vue`、`frontend/src/utils/chatState.js` |
+| 测试 | `tests/`、`frontend/`、`java-backend/` |
 
-### 12.3 持久化边界
+## 14. 权威文档关系
 
-```text
-认证用户和会话       -> PostgreSQL auth schema
-用户长期记忆         -> LangGraph Store，namespace=(user_id,)
-会话索引             -> LangGraph Store，namespace=("sessions", user_id)
-异步任务绑定         -> LangGraph Store，namespace=("async_tasks", ...)
-沙箱绑定和交付元数据 -> LangGraph Store
-会话消息和执行状态   -> LangGraph Checkpointer，按 thread_id
-文章处理状态、草稿和授权 -> PostgreSQL workflow.document_processing / extraction_drafts / *_access_grants
-规范情报文档         -> PostgreSQL threatweave.documents
-实体和别名           -> PostgreSQL threatweave.entities / entity_aliases
-关系                 -> PostgreSQL threatweave.relations
-精确出处             -> PostgreSQL threatweave.provenance
-用户 Agent 文件与交付件 -> 用户 OpenSandbox；技能位于 /skills/，交付件位于 /deliverables/
-调度 Agent 文件       -> system-scheduler OpenSandbox；技能位于 /skills/
-本地图表缓存         -> runtime/visualizations/，可清理、可再生
-技能源文件           -> src/agent/skills/（同步源）；实际读取副本位于用户或 system-scheduler 沙箱 /skills/
-```
+- [`AGENTS.md`](../AGENTS.md)：仓库开发、测试和编辑规范。
+- [`THREATWEAVE_CONFIRMED_DECISIONS.md`](./THREATWEAVE_CONFIRMED_DECISIONS.md)：已确认的业务边界、实体/关系模型和存储决策。
 
-Store、Checkpointer、用户/系统沙箱和 ThreatWeave 业务数据库解决不同问题：Store 保存索引和长期状态，Checkpointer 保存会话执行状态，沙箱保存 Agent 文件，Java/PostgreSQL 保存威胁情报业务事实。它们不能互相替代。
-
-## 13. 真实链路验证与已知限制
-
-本节记录当前代码的实际验证结果和仍待处理的限制，不替代
-[`THREATWEAVE_CONFIRMED_DECISIONS.md`](THREATWEAVE_CONFIRMED_DECISIONS.md) 中的业务决策。
-
-### 13.1 已完成的真实验证
-
-2026-10-04 对空的 `threatweave` 和 `workflow` 测试数据执行了一次真实用户请求。测试文章为 CNCERT/CC
-公开威胁预警《[关于新型 P2P 僵尸网络 PBot 的分析报告](https://www.cert.org.cn/publish/main/11/2021/20210628133948926376206/20210628133948926376206_.html)》。验证不是通过 SQL 预置文档、实体或关系完成，而是经过以下正式路径：
-
-```text
-用户会话 -> 主 Agent -> intelligence_workflow_orchestrator
--> IntelligenceWorkflow(ingest_full) -> 采集器 -> A 格式化并写 documents
--> B 抽取并调用 threat_extraction_write -> Java CRUD -> PostgreSQL
-```
-
-验证结果如下：
-
-| 验收项 | 结果 |
-| --- | --- |
-| 已批准来源 URL 的抓取 | 成功；`PageFetcher` 使用浏览器请求头后获得 HTTP 200。 |
-| A 深度格式化与规范文档写入 | 成功；生成一篇 `threatweave.documents` 记录。 |
-| 工作流状态记录 | 成功；对应 `workflow.document_processing` 为 `formatting=completed`、`extraction=completed`。 |
-| B 实体与出处写入 | 成功；写入 29 个实体及 29 条 provenance。 |
-| B 关系写入 | 未通过；该次真实运行写入 0 条关系，见下一节。 |
-
-这说明 A 到 B 的调用、受控 Java 写入、状态迁移和实体出处持久化均已走通；不能把直接向
-`threatweave` 表插入测试数据当作端到端验证，因为那会绕过 A/B 和 `workflow.document_processing`。
-
-### 13.2 当前未解决的问题
-
-1. **B 在关系丰富的真实文章中仍可能产出零关系。** PBot 正文明确包含“PBot 使用自定义 P2P 协议”、传播方式、下载基础设施等关系性描述，但当前真实运行只写入实体与出处，没有写入 `relations`。需要在 B 的实际工具调用记录中确认模型是否提交了 `relations`，再区分是候选生成缺失、`validate_extraction_evidence` 拒绝，还是 Java 写入契约处理错误。修复后应以同一文章重跑，并验收关系与 relation provenance 均大于 0。
-2. **HTML 图生成依赖外部 Charts MCP，尚未完成有非空图谱数据时的端到端验收。** C 被刻意限制为只能调用 `generate_network_graph_html`，该工具只转发到 `MODELSCOPE_CHARTS_MCP_URL`，不可用、返回非 HTML 或库中没有实体关系时均不得本地回退。必须先解决关系写入，再验证 Charts MCP 返回的 HTML 能否登记为可预览、可下载的交付件。
-3. **交付件的会话内展示仍需回归测试。** A/B/C 的文件必须由 `write_deliverable` 产生并由后端登记；前端应在同一条任务结果中展示可用的预览/下载入口，而不是让模型暴露沙箱文件名、artifact ID 或要求用户再发送一次“下载”。需要分别复测格式化 Markdown、抽取 Markdown 和 C 的 HTML 图三种路径，包含刷新会话后的权限校验。
-4. **定期调度的真实生产验证未完成。** 当前已验证用户同步调用路径；调度器使用相同 `IntelligenceWorkflow`，但仍应在启用 `THREATWEAVE_SCHEDULER_ENABLED=true` 的独立测试环境中验证最小间隔、`system-scheduler` 专用沙箱、失败重试和重复文章幂等性。
-
-### 13.3 后续排障建议
-
-后续维护者应先保留一次失败或零关系运行的 B 工具轨迹，并按以下顺序检查：
-
-1. `threat_document_get` 返回的分块正文是否包含用于关系判断的原句；
-2. `validate_extraction_evidence` 输入和返回中的 `relations`、`rejected` 字段；
-3. `threat_extraction_write` 发送给 Java 的 `relations` 数量及 Java 响应；
-4. `threatweave.relations` 和 relation 对应的 `threatweave.provenance` 是否在同一事务后存在；
-5. 修复后清理该篇测试文档的处理状态，使用 `force_refresh=true` 重新走正式工作流，而非手工补写关系。
+当代码、本文和业务决策文档冲突时，优先检查当前代码和测试；确认业务意图发生变化后，再同步更新决策文档和本文。
