@@ -37,6 +37,10 @@ _TEXT_DELIVERABLE_PATTERN = re.compile(
     r"(?:artifact_id|artifact-id|资源标识)\s*[：:]\s*`?([0-9a-f]{32})`?",
     re.IGNORECASE | re.DOTALL,
 )
+_JSON_FENCE_PATTERN = re.compile(
+    r"```(?:json|application/json)\s*\r?\n(.*?)\r?\n?```",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def content_to_text(content: Any) -> str:
@@ -83,6 +87,17 @@ def _parse_json_content(content: Any) -> Any:
         return json.loads(stripped)
     except json.JSONDecodeError:
         return content
+
+
+def _embedded_json_values(content: str) -> list[Any]:
+    """解析混合说明文本中独立 fenced JSON 块的有效值。"""
+    values: list[Any] = []
+    for match in _JSON_FENCE_PATTERN.finditer(content):
+        try:
+            values.append(json.loads(match.group(1)))
+        except json.JSONDecodeError:
+            continue
+    return values
 
 
 def _image_source(data: Any, mime_type: Any) -> dict[str, str] | None:
@@ -227,6 +242,19 @@ def _find_sandbox_deliverables(content: Any, depth: int = 0) -> list[dict[str, s
     """递归读取已登记交付件，绝不将沙箱路径暴露给前端。"""
     if depth > 5:
         return []
+    if isinstance(content, str):
+        parsed_content = _parse_json_content(content)
+        if not isinstance(parsed_content, str):
+            return _find_sandbox_deliverables(parsed_content, depth + 1)
+
+        # 子 Agent 有时会在原样 JSON 交付结果后补充说明。解析嵌入的
+        # 代码块，避免模型附言让已生成且已登记的文件失去下载入口。
+        structured_deliverables = [
+            deliverable
+            for value in _embedded_json_values(content)
+            for deliverable in _find_sandbox_deliverables(value, depth + 1)
+        ]
+        return [*structured_deliverables, *_text_deliverables(content)]
     content = _parse_json_content(content)
     if isinstance(content, list):
         return [
@@ -234,8 +262,6 @@ def _find_sandbox_deliverables(content: Any, depth: int = 0) -> list[dict[str, s
             for item in content
             for deliverable in _find_sandbox_deliverables(item, depth + 1)
         ]
-    if isinstance(content, str):
-        return _text_deliverables(content)
     if not isinstance(content, dict):
         return []
     if content.get("type") == "sandbox_deliverable":

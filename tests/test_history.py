@@ -330,6 +330,32 @@ class HistorySessionTests(unittest.IsolatedAsyncioTestCase):
             f"/deliverables/{artifact_id}?user_id=user-2",
         )
 
+    def test_fenced_task_result_with_explanation_restores_markdown_download(self) -> None:
+        """带附言的同步任务结果在恢复历史时仍保留下载入口。"""
+        artifact_id = "d" * 32
+        messages = serialize_messages(
+            [
+                AIMessage(content="", tool_calls=[{
+                    "id": "format-task-with-note",
+                    "name": "task",
+                    "args": {"description": "导出清洗 Markdown"},
+                }]),
+                ToolMessage(
+                    tool_call_id="format-task-with-note",
+                    content=f"""```json
+{{"deliverables":[{{"type":"sandbox_deliverable","artifact_id":"{artifact_id}","filename":"document-1-formatted.md","mime_type":"text/markdown","label":"文档 1 清洗后原文"}}]}}
+```
+
+已完成导出。""",
+                    name="task",
+                ),
+            ],
+            user_id="user-2",
+        )
+
+        self.assertEqual(len(messages[0].deliverables), 1)
+        self.assertEqual(messages[0].deliverables[0].artifact_id, artifact_id)
+
 class ThreadHistoryReaderTests(unittest.IsolatedAsyncioTestCase):
     """确保历史恢复通过已编译状态图重放 DeltaChannel。"""
 

@@ -95,6 +95,34 @@ class VisualizationExtractionTests(unittest.TestCase):
         self.assertEqual(deliverables[0]["artifact_id"], artifact_id)
         self.assertEqual(deliverables[0]["filename"], "document-1-formatted.md")
 
+    def test_extracts_deliverables_from_fenced_json_with_trailing_explanation(self) -> None:
+        """子 Agent 的附言不能让已登记的下载交付件丢失。"""
+        formatted_id = "a" * 32
+        extraction_id = "b" * 32
+        graph_id = "c" * 32
+        content = """```json
+{"deliverables":[
+  {"type":"sandbox_deliverable","artifact_id":"%s","filename":"document-1-formatted.md","mime_type":"text/markdown","label":"清洗后原文"},
+  {"type":"sandbox_deliverable","artifact_id":"%s","filename":"document-1-extraction.md","mime_type":"text/markdown","label":"提取结果"},
+  {"type":"sandbox_deliverable","artifact_id":"%s","filename":"document-1-graph.html","mime_type":"text/html","label":"关系图"}
+]}
+```
+
+The requested files have been generated.""" % (formatted_id, extraction_id, graph_id)
+        from api.message_utils import extract_sandbox_deliverables
+
+        deliverables = extract_sandbox_deliverables(content)
+
+        self.assertEqual(len(deliverables), 3)
+        self.assertEqual(
+            [item["filename"] for item in deliverables],
+            [
+                "document-1-formatted.md",
+                "document-1-extraction.md",
+                "document-1-graph.html",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

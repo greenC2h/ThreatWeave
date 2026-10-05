@@ -164,6 +164,31 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("`ingest_full` + `extraction_markdown`", system_prompt)
         self.assertIn("不得使用 `list_processing`", system_prompt)
 
+    def test_plain_library_query_defaults_to_inline_text(self) -> None:
+        """普通库内查询不能被委派为报告或图表交付任务。"""
+        self.assertIn("只返回聊天文本，不生成任何文件或图", system_prompt)
+        self.assertIn("查询、列举、统计或要求简要说明", system_prompt)
+        self.assertIn("只有用户明确要求", system_prompt)
+
+        project_root = Path(__file__).resolve().parents[1]
+        analyst_config = (
+            project_root / "src/agent/subagents/configs/threat_analyst.yaml"
+        ).read_text(encoding="utf-8")
+        analyst_skill = (
+            project_root
+            / "src/agent/skills/subagents/threat_analyst/threat-analysis/SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("默认输出模式是聊天文本", analyst_config)
+        self.assertIn("默认输出模式是聊天文本", analyst_skill)
+
+    def test_intel_ingestor_description_matches_synchronous_runtime(self) -> None:
+        """A 由同步工作流调用，配置描述不能误导为异步任务。"""
+        config_path = Path(__file__).resolve().parents[1] / "src/agent/subagents/configs/intel_ingestor.yaml"
+        config = config_path.read_text(encoding="utf-8")
+
+        self.assertIn("同步工作流", config)
+        self.assertNotIn("description: 异步格式化", config)
+
     def test_threat_analyst_skill_front_matter_is_valid_yaml(self) -> None:
         """Skill 元数据无效时，DeepAgents 会静默跳过完整交付流程。"""
         skill_path = (

@@ -1,5 +1,5 @@
 name: intel_ingestor
-description: 异步格式化批准来源的公开威胁情报，并写入规范文档。
+description: 由同步工作流格式化批准来源的公开威胁情报，并写入规范文档。
 tools:
   - threat_document_upsert
   - write_deliverable
