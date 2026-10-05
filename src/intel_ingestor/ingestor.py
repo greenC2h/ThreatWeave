@@ -1,7 +1,7 @@
-"""intel_ingestor 的确定性采集编排：列表发现 → 抓取 → 初步格式化。
+"""ThreatPipeline 的确定性采集阶段：列表发现 → 抓取 → 初步格式化。
 
 来源启停校验、列表页文章定位、正文容器提取、基础 Markdown 渲染与稳定 ``doc_key``
-生成由代码完成。深度清洗和 Java MCP 入库属于 Agent 职责，不在本模块执行。
+生成由代码完成。深度清洗和 Java 写入由 ThreatPipeline 的后续阶段执行。
 """
 
 from __future__ import annotations
@@ -197,7 +197,7 @@ async def collect_article(
     source: SourceConfig,
     fetcher: PageFetcher,
 ) -> CollectionOutcome:
-    """抓取一篇文章并生成待 Agent 深度格式化的草稿。"""
+    """抓取一篇文章并生成待 Pipeline 深度格式化的草稿。"""
     try:
         fetch_url = _resolve_fetch_url(ref.url, source)
     except ValueError as exc:

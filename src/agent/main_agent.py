@@ -39,16 +39,16 @@ from agent.middlewares.agent_protection import build_agent_protection_middleware
 from agent.middlewares.context_injection import ContextInjectionMiddleware
 from agent.schema import ThreatWeaveContext
 from agent.tools.hitl_tools import request_additional_info
-from agent.tools.mcp_client import load_common_tools
+from agent.tools.mcp_client import load_common_tools, load_threatweave_tools
 from agent.tools.skill_tools import create_skill_management_tools
 from agent.tools.async_sandbox_tools import create_async_sandbox_tools
-from agent.tools.intelligence_workflow_tools import create_intelligence_workflow_tools
+from agent.tools.threat_pipeline_tools import create_threat_pipeline_tools
+from services.deliverables import create_write_deliverable_tool
 from agent.middlewares.memory_update import MemoryUpdateMiddleware, ensure_preferences_file
 from agent.middlewares.skill_management_visibility import (
     SkillManagementVisibilityMiddleware,
 )
 from agent.middlewares.skills_sync import SandboxSkillsMiddleware
-from services.deliverables import DeliverableRegistry
 
 
 # 异步 ThreatWeave 子 Agent 运行在独立的 Agent Protocol 服务中。
@@ -112,14 +112,14 @@ async def create_main_agent(
     )
 
     common_tools = await load_common_tools()
-    workflow_subagent = load_subagent(
-        Path(__file__).parent / "subagents" / "configs" / "intelligence_workflow_orchestrator.yaml",
-        available_tools=(),
-        local_tools=create_intelligence_workflow_tools(
-            user_id,
-            sandbox_backend,
-            DeliverableRegistry(store),
-        ),
+    _, read_tools = await load_threatweave_tools({"describe_read_model", "execute_read_query"})
+    threat_handle_subagent = load_subagent(
+        Path(__file__).parent / "subagents" / "configs" / "threat_handle.yaml",
+        available_tools=read_tools,
+        local_tools=[
+            *create_threat_pipeline_tools(user_id),
+            create_write_deliverable_tool(sandbox_backend),
+        ],
     )
 
     # 异步子 Agent 的图不嵌入主图。
@@ -156,8 +156,8 @@ async def create_main_agent(
         system_prompt=f"{system_prompt}\n{get_async_subagent_instructions()}",
         memory=[AGENTS_MD_FILENAME],
         tools=main_tools,
-        # 编排器作为本地同步子 Agent，C 等仍通过 AsyncSubAgentMiddleware 独立执行。
-        subagents=[workflow_subagent, *async_subagents],
+        # threat_handle 作为本地同步子 Agent；threat_analyst 保持独立异步执行。
+        subagents=[threat_handle_subagent, *async_subagents],
         middleware=[
             # 将运行上下文中的用户身份与记忆路径加入模型可见的系统上下文。
             ContextInjectionMiddleware(),

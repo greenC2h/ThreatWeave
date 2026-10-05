@@ -16,4 +16,8 @@ public interface ThreatWeaveService {
     Map<String, Object> writeExtraction(ThreatWeaveRequests.ExtractionWriteRequest request);
 
     Map<String, Object> queryGraph(String query, List<Long> documentIds, int limit);
+
+    Map<String, Object> describeReadModel();
+
+    Map<String, Object> executeReadQuery(ThreatWeaveRequests.ReadQueryRequest request);
 }

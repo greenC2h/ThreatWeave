@@ -5,10 +5,9 @@
 处理 ThreatWeave 实体、关系、证据、调度或 PostgreSQL 业务表前，必须读取
 `doc/THREATWEAVE_CONFIRMED_DECISIONS.md`。该文件是当前业务边界与数据模型的唯一权威来源。
 
-- 用户文章处理由同步 `intelligence_workflow_orchestrator` 完成：它根据模式确定性地调用 A、B 并等待完整结果；A 与 B 不直接互相提交任务。
-- `intel_ingestor` 只处理工作流交给它的一批文章草稿，深度格式化并保存正文。
-- `entity_relation_extractor` 只处理工作流指定的格式化文档；每次写入必须有正文中的精确出处。`PREVIEW` 只保存用户草稿，`COMMIT` 才写图谱。
-- 用户明确要求下载时，A 使用 `formatted_markdown`、B 使用 `extraction_markdown` 生成交付件；没有该要求时不得创建文件。
+- 用户文章处理由同步 `threat_handle` 调用 `run_threat_pipeline` 完成。Pipeline 固定执行采集、批量清洗格式化、文档写入、分块抽取和图谱写入；没有预览、只格式化或补抽取模式。
+- 同一来源文章正文未变且已完成时，Pipeline 跳过；正文变化时覆盖该文档的提取事实，并只回收不再被其他文档引用的实体和关系。
+- `threat_handle` 查询清洗后的正文或该文档的实体关系时，只能经 `describe_read_model` 和 `execute_read_query` 获取数据库中间产物；需要 Markdown 文件时统一使用 `write_deliverable`。
 - 库内关联查询、图谱或报告使用 `start_async_task` 提交 `threat_analyst`。默认输出模式是聊天文本；普通查询、列举、统计和简要说明只返回结果，不生成文件。HTML 图与 Markdown 报告必须分别由用户在当前消息中明确要求，空查询不生成空图。
 - 新增、启用或停用情报源必须经过人工确认；不得在普通对话中直接修改来源配置。
 

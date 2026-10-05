@@ -1,7 +1,7 @@
 """加载并校验已登记来源配置（sources/*.yaml）。
 
-来源清单只允许来自 Skill 目录下的 ``sources/``（或通过
-``INTEL_INGESTION_SOURCES_DIR`` 显式指定的测试替身目录），采集器绝不接受
+来源清单只允许来自本模块的 ``sources/``（或通过
+``THREATWEAVE_SOURCES_DIR`` 显式指定的测试替身目录），采集器绝不接受
 调用方临时传入的任意 URL 作为来源。
 """
 
@@ -18,22 +18,14 @@ from intel_ingestor.schema import SourceConfig
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SOURCES_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "agent"
-    / "skills"
-    / "subagents"
-    / "intel_ingestor"
-    / "intel-ingestion"
-    / "sources"
-)
+DEFAULT_SOURCES_DIR = Path(__file__).resolve().parent / "sources"
 
 _SELECTOR_KEYS = ("content_selector", "title_selector", "date_selector", "article_link_attribute")
 
 
 def _sources_dir() -> Path:
     """返回来源目录；优先使用环境变量指定的测试替身目录。"""
-    override = os.getenv("INTEL_INGESTION_SOURCES_DIR")
+    override = os.getenv("THREATWEAVE_SOURCES_DIR")
     return Path(override) if override else DEFAULT_SOURCES_DIR
 
 

@@ -30,7 +30,7 @@ class AsyncSubagentRegistration:
 
 
 async def _load_threat_analyst_tools() -> list[Any]:
-    common_tools, threat_tools = await load_threatweave_tools({"threat_graph_query"})
+    common_tools, threat_tools = await load_threatweave_tools({"describe_read_model", "execute_read_query"})
     return [*common_tools, *threat_tools, generate_network_graph_html]
 
 

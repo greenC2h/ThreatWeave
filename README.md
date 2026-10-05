@@ -1,15 +1,15 @@
 # ThreatWeave
 
-ThreatWeave 是一个面向公开威胁情报的多 Agent 工作台。它将来源情报规范化、抽取具备原文出处的实体和关系，并基于库内数据生成可交互图谱与 Markdown 分析报告。
+ThreatWeave 是一个面向公开威胁情报的工作台。它通过确定性 Pipeline 将来源文章规范化、抽取具备原文出处的实体和关系，并基于库内数据生成图谱与 Markdown 分析报告。
 
 ## 当前架构
 
-- `intel_ingestor`：由同步工作流调用，采集并保存格式化后的情报正文。
-- `entity_relation_extractor`：由同步工作流调用，预览或正式抽取实体、别名、关系及其原文出处。
+- `ThreatPipeline`：固定执行采集、批量清洗、文档写入、分块抽取和图谱写入。
+- `threat_handle`：同步调用 Pipeline，或查询并导出规范正文、实体和关系。
 - `threat_analyst`：异步只读查询图谱，生成 HTML 图和分析报告。
 - FastAPI 与 Vue：认证、对话、异步任务和 artifact 展示。
-- Java Spring Boot：ThreatWeave 文档、实体、关系和 provenance 的 PostgreSQL CRUD。
-- MCP：按 Agent 权限筛选并暴露 8 个 ThreatWeave 业务工具。
+- Java Spring Boot：ThreatWeave 文档和图谱的类型化命令接口，以及受控只读查询接口。
+- MCP：只暴露 `describe_read_model` 和 `execute_read_query` 两个只读业务查询工具。
 
 当前架构、运行方式、接口和排障说明见 [项目技术文档](doc/PROJECT_DOCUMENTATION.md)；已确认的业务边界和数据模型见 [凿定决策](doc/THREATWEAVE_CONFIRMED_DECISIONS.md)。
 

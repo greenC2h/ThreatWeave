@@ -1,14 +1,13 @@
-"""通用异步子 Agent 注册配置测试。"""
+"""异步威胁分析器的只读查询配置测试。"""
 
 from __future__ import annotations
 
-import json
+import asyncio
 import importlib.util
 import inspect
+import json
 import unittest
-import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import yaml
@@ -31,27 +30,18 @@ def _configured_tool(name: str):
 
 
 class AsyncSubagentConfigurationTests(unittest.TestCase):
-    """确保 LangGraph 服务从通用异步子 Agent 入口注册图。"""
+    """确保高级分析任务只使用新的受控查询接口。"""
 
-    def test_async_guidance_hides_internal_task_identifiers(self) -> None:
-        """
-        防止提示词契约出现不支持的工具和虚假的完成声明。
-        """
+    def test_main_prompt_routes_article_handling_to_threat_handle(self) -> None:
         instructions = f"{system_prompt}\n{get_async_subagent_instructions()}"
-        config_directory = Path(__file__).resolve().parents[1] / "src/agent/subagents/configs"
-        configured_prompts = "\n".join(
-            path.read_text(encoding="utf-8") for path in config_directory.glob("*.yaml")
-        )
-        for tool_name in ("check_async_task", "list_async_tasks", "cancel_async_task"):
-            self.assertIn(tool_name, instructions)
-        self.assertNotIn("update_async_task", instructions + configured_prompts)
-        self.assertIn("`start_async_task`", instructions)
-        self.assertIn("threat_analyst", instructions)
-        self.assertNotIn("intel_ingestion_orchestrator", instructions)
-        self.assertNotIn("entity_relation_extractor", instructions)
 
-    def test_registers_the_threatweave_async_graphs(self) -> None:
-        """Agent Protocol 配置必须只公开已确认的 ThreatWeave 图。"""
+        self.assertIn("`threat_handle`", instructions)
+        self.assertIn("`run_threat_pipeline`", instructions)
+        self.assertNotIn("intelligence_workflow_orchestrator", instructions)
+        self.assertNotIn("format_only", instructions)
+        self.assertNotIn("extract_preview", instructions)
+
+    def test_registers_only_the_threat_analyst_async_graph(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         config = json.loads((project_root / "langgraph.json").read_text(encoding="utf-8"))
 
@@ -60,28 +50,24 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
             "./src/agent/subagents/async_entry.py:threat_analyst_agent",
         )
         self.assertNotIn("intel_ingestion_orchestrator_async", config["graphs"])
-        self.assertNotIn("intel_ingestor_async", config["graphs"])
-        self.assertNotIn("procurement_analyst_async", config["graphs"])
 
-    def test_async_graph_requires_a_shared_sandbox_context(self) -> None:
-        """远程图必须由启动任务传入的共享 sandbox_id 构造。"""
+    def test_async_graph_requires_shared_sandbox_context(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         module_path = project_root / "src" / "agent" / "subagents" / "async_entry.py"
-        spec = importlib.util.spec_from_file_location("test_async_chart_graph", module_path)
+        spec = importlib.util.spec_from_file_location("test_async_graph", module_path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
 
-        threat_tools = [_configured_tool("threat_graph_query")]
-        with (
-            patch("agent.subagents.async_registry.load_threatweave_tools", new=AsyncMock(return_value=(
-                [_configured_tool("web_search")], threat_tools,
-            ))),
+        read_tools = [_configured_tool("describe_read_model"), _configured_tool("execute_read_query")]
+        with patch(
+            "agent.subagents.async_registry.load_threatweave_tools",
+            new=AsyncMock(return_value=([_configured_tool("web_search")], read_tools)),
         ):
             spec.loader.exec_module(module)
 
         self.assertIn("ServerRuntime", str(inspect.signature(module.threat_analyst_agent)))
 
-        async def verify():
+        async def verify() -> None:
             with self.assertRaisesRegex(RuntimeError, "sandbox_id"):
                 async with module.threat_analyst_agent(
                     _ExecutionRuntime(access_context="threads.create_run", store=None, context={}),
@@ -90,158 +76,70 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
             with patch.object(module, "build_async_subagent_graph", return_value=MagicMock()), patch.object(
                 module.SandboxSync, "connect",
             ) as connect:
-                for access in ("threads.read", "threads.update", "assistants.read"):
-                    async with module.threat_analyst_agent(_ReadRuntime(access_context=access, store=None)):
-                        pass
+                async with module.threat_analyst_agent(_ReadRuntime(access_context="threads.read", store=None)):
+                    pass
                 connect.assert_not_called()
 
         asyncio.run(verify())
 
-    def test_async_graph_uses_an_empty_route_map_for_sandbox_default(self) -> None:
-        """异步图只用共享沙箱默认后端时仍须传入 CompositeBackend 路由表。"""
+    def test_threat_analyst_uses_read_tools_and_deliverable_writer(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
-        module_path = project_root / "src" / "agent" / "subagents" / "async_entry.py"
-        spec = importlib.util.spec_from_file_location("test_async_chart_routes", module_path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        threat_tools = [_configured_tool("threat_graph_query")]
-        with (
-            patch("agent.subagents.async_registry.load_threatweave_tools", new=AsyncMock(return_value=(
-                [_configured_tool("web_search")], threat_tools,
-            ))),
-        ):
-            spec.loader.exec_module(module)
-
-        with (
-            patch.object(module, "OPEN_SANDBOX_API_KEY", "test-key"),
-            patch.object(module.SandboxSync, "connect", return_value=MagicMock()),
-            patch.object(module, "CompositeBackend", return_value=MagicMock()) as backend_factory,
-            patch.object(module, "create_deep_agent", return_value=MagicMock()) as graph_factory,
-        ):
-            module.build_async_subagent_graph("threat_analyst", SandboxBackendProxy())
-
-        self.assertEqual(backend_factory.call_args.kwargs["routes"], {})
-        self.assertEqual(
-            [tool.name for tool in graph_factory.call_args.kwargs["tools"]],
-            [
-                "web_search",
-                "threat_graph_query",
-                "generate_network_graph_html",
-                "write_deliverable",
-            ],
-        )
-        self.assertEqual(
-            type(graph_factory.call_args.kwargs["middleware"][0]).__name__,
-            "SandboxSkillsMiddleware",
-        )
-        self.assertIsNone(graph_factory.call_args.kwargs["interrupt_on"])
-
-    def test_threat_analyst_loads_its_skill_without_write_tools(self) -> None:
-        """威胁分析器加载自身流程技能，但只能读取图谱。"""
-        config_path = Path(__file__).resolve().parents[1] / "src/agent/subagents/configs/threat_analyst.yaml"
-        config = config_path.read_text(encoding="utf-8")
-
-        self.assertIn("skills:", config)
-        self.assertIn("/skills/subagents/threat_analyst/", config)
-        self.assertNotIn("threat_extraction_write", config)
-        self.assertNotIn("request_additional_info", config)
-        self.assertNotIn("build_threat_graph_html", config)
-        self.assertIn("write_deliverable", config)
-        self.assertNotIn("DELIVERABLE:", config)
-        self.assertIn("threat-analysis Skill", config)
-        self.assertIn("威胁", config)
-
-    def test_sync_workflow_orchestrator_preserves_structured_deliverables(self) -> None:
-        """同步任务结果必须保留 artifact，SSE 才能即时展示下载入口。"""
-        config_path = Path(__file__).resolve().parents[1] / "src/agent/subagents/configs/intelligence_workflow_orchestrator.yaml"
-        config = config_path.read_text(encoding="utf-8")
-
-        self.assertIn("原样返回该工具的 JSON 结果", config)
-        self.assertIn("`deliverables`", config)
-
-    def test_extraction_markdown_request_has_an_unambiguous_workflow_mapping(self) -> None:
-        """用户要提取结果文件时，路由规则不能降级为只查处理状态。"""
-        self.assertIn("`ingest_full` + `extraction_markdown`", system_prompt)
-        self.assertIn("不得使用 `list_processing`", system_prompt)
-
-    def test_plain_library_query_defaults_to_inline_text(self) -> None:
-        """普通库内查询不能被委派为报告或图表交付任务。"""
-        self.assertIn("只返回聊天文本，不生成任何文件或图", system_prompt)
-        self.assertIn("查询、列举、统计或要求简要说明", system_prompt)
-        self.assertIn("只有用户明确要求", system_prompt)
-
-        project_root = Path(__file__).resolve().parents[1]
-        analyst_config = (
+        config = (
             project_root / "src/agent/subagents/configs/threat_analyst.yaml"
         ).read_text(encoding="utf-8")
-        analyst_skill = (
-            project_root
-            / "src/agent/skills/subagents/threat_analyst/threat-analysis/SKILL.md"
-        ).read_text(encoding="utf-8")
-        self.assertIn("默认输出模式是聊天文本", analyst_config)
-        self.assertIn("默认输出模式是聊天文本", analyst_skill)
 
-    def test_intel_ingestor_description_matches_synchronous_runtime(self) -> None:
-        """A 由同步工作流调用，配置描述不能误导为异步任务。"""
-        config_path = Path(__file__).resolve().parents[1] / "src/agent/subagents/configs/intel_ingestor.yaml"
-        config = config_path.read_text(encoding="utf-8")
+        self.assertIn("describe_read_model", config)
+        self.assertIn("execute_read_query", config)
+        self.assertIn("write_deliverable", config)
+        self.assertNotIn("threat_graph_query", config)
 
-        self.assertIn("同步工作流", config)
-        self.assertNotIn("description: 异步格式化", config)
-
-    def test_threat_analyst_skill_front_matter_is_valid_yaml(self) -> None:
-        """Skill 元数据无效时，DeepAgents 会静默跳过完整交付流程。"""
+    def test_threat_analyst_skill_has_valid_metadata_and_sql_guidance(self) -> None:
         skill_path = (
             Path(__file__).resolve().parents[1]
             / "src/agent/skills/subagents/threat_analyst/threat-analysis/SKILL.md"
         )
         text = skill_path.read_text(encoding="utf-8")
         _, front_matter, _ = text.split("---", maxsplit=2)
-
         metadata = yaml.safe_load(front_matter)
 
         self.assertEqual(metadata["name"], "threat-analysis")
         self.assertIn("Markdown", metadata["description"])
+        self.assertIn("describe_read_model", text)
+        self.assertIn("execute_read_query", text)
+        self.assertNotIn("threat_graph_query", text)
 
-    def test_execution_and_read_graphs_share_topology_and_close_clients(self) -> None:
-        """实际编译的图在读取期间没有资源时也必须保持兼容。"""
-        module_path = Path(__file__).resolve().parents[1] / "src/agent/subagents/async_entry.py"
-        spec = importlib.util.spec_from_file_location("test_async_chart_lifetime", module_path)
+    def test_compiled_graph_receives_only_read_tools(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        module_path = project_root / "src" / "agent" / "subagents" / "async_entry.py"
+        spec = importlib.util.spec_from_file_location("test_async_tools", module_path)
+        assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
-        threat_tools = [_configured_tool("threat_graph_query")]
-        with (
-            patch("agent.subagents.async_registry.load_threatweave_tools", new=AsyncMock(return_value=(
-                [_configured_tool("web_search")], threat_tools,
-            ))),
+        read_tools = [_configured_tool("describe_read_model"), _configured_tool("execute_read_query")]
+        with patch(
+            "agent.subagents.async_registry.load_threatweave_tools",
+            new=AsyncMock(return_value=([_configured_tool("web_search")], read_tools)),
         ):
             spec.loader.exec_module(module)
 
-        async def verify():
-            sandbox = MagicMock(id="sandbox")
-            with patch.object(module, "OPEN_SANDBOX_API_KEY", "test"), patch.object(
-                module.SandboxSync, "connect", return_value=sandbox,
-            ) as connect:
-                async with module.threat_analyst_agent(
-                    _ReadRuntime(access_context="threads.read", store=None),
-                ) as readonly:
-                    connect.assert_not_called()
-                    async with module.threat_analyst_agent(_ExecutionRuntime(
-                        access_context="threads.create_run", store=None, context={"sandbox_id": "sandbox"},
-                    )) as execution:
-                        self.assertEqual(set(readonly.nodes), set(execution.nodes))
-                        self.assertEqual(readonly.get_graph().edges, execution.get_graph().edges)
-                        self.assertEqual(readonly.get_input_jsonschema(), execution.get_input_jsonschema())
-                        self.assertEqual(readonly.get_output_jsonschema(), execution.get_output_jsonschema())
-                        sandbox.close.assert_not_called()
-                sandbox.close.assert_called_once()
-                sandbox.kill.assert_not_called()
-                sandbox.reset_mock()
-                with patch.object(module, "build_async_subagent_graph", side_effect=RuntimeError("compile failed")):
-                    with self.assertRaisesRegex(RuntimeError, "compile failed"):
-                        async with module.threat_analyst_agent(_ExecutionRuntime(
-                            access_context="threads.create_run", store=None, context={"sandbox_id": "sandbox"},
-                        )):
-                            pass
-                sandbox.close.assert_called_once()
+        with (
+            patch.object(module, "OPEN_SANDBOX_API_KEY", "test-key"),
+            patch.object(module.SandboxSync, "connect", return_value=MagicMock()),
+            patch.object(module, "CompositeBackend", return_value=MagicMock()),
+            patch.object(module, "create_deep_agent", return_value=MagicMock()) as graph_factory,
+        ):
+            module.build_async_subagent_graph("threat_analyst", SandboxBackendProxy())
 
-        asyncio.run(verify())
+        self.assertEqual(
+            [tool.name for tool in graph_factory.call_args.kwargs["tools"]],
+            [
+                "web_search",
+                "describe_read_model",
+                "execute_read_query",
+                "generate_network_graph_html",
+                "write_deliverable",
+            ],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

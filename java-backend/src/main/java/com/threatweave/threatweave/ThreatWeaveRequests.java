@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import java.util.List;
+import java.util.Map;
 
 /** 定义 ThreatWeave 采集与抽取边界使用的请求对象。 */
 public final class ThreatWeaveRequests {
@@ -34,4 +35,6 @@ public final class ThreatWeaveRequests {
     public record ExtractionWriteRequest(
             @NotNull Long documentId, @NotNull @Valid List<EntityInput> entities,
             @Valid List<RelationInput> relations) { }
+
+    public record ReadQueryRequest(@NotBlank String sql, List<Object> parameters) { }
 }

@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 
@@ -23,7 +22,7 @@ class SourceConfig:
     - ``content_selector`` / ``title_selector`` / ``date_selector``：定位正文、
       标题与发布时间的简易选择器（形如 ``div.artil_content`` / ``h2.artil_tit``）。
     - ``skip_selectors``：正文区域中明确不是正文的结构容器选择器。广告、推荐和
-      其他业务无关内容仍由 Agent 在深度格式化阶段判断。
+      其他业务无关内容仍由 Pipeline 的格式化模型判断。
     - ``fetch_url_template``：详情页由前端单页应用渲染时，按文章 URL 查询参数
       生成实际公开详情接口地址。
     - ``external_id_query_parameter``：外部文章标识位于查询参数时使用，避免同一路径
@@ -51,11 +50,11 @@ class SourceConfig:
 
 @dataclass(frozen=True)
 class CollectedDocument:
-    """一篇待 A 深度格式化的来源文章。
+    """一篇待 Pipeline 深度格式化的来源文章。
 
     ``preliminary_content`` 只经过确定性的编码修复、正文容器提取和基础 Markdown
-    渲染。广告、无关内容、重复段落和段落恢复必须由 ``intel_ingestor`` Agent 判断。
-    ``doc_key`` 由来源与稳定文章标识导出，供 Agent 写入最终版本时保持幂等覆盖。
+    渲染。广告、无关内容、重复段落和段落恢复由格式化模型判断。``doc_key`` 由来源与
+    稳定文章标识导出，供 Pipeline 写入最终版本时保持幂等覆盖。
     """
 
     doc_key: str
@@ -89,7 +88,7 @@ class CollectionOutcome:
 
 @dataclass(frozen=True)
 class CollectionReport:
-    """一次来源采集的汇总结果，可作为 A 工具的结构化返回值。"""
+    """一次来源采集的汇总结果，供 ThreatPipeline 消费。"""
 
     source_id: str
     outcomes: tuple[CollectionOutcome, ...] = ()
@@ -107,32 +106,3 @@ class CollectionReport:
     @property
     def skipped_count(self) -> int:
         return sum(1 for o in self.outcomes if o.status == "skipped")
-
-    def to_agent_payload(self) -> str:
-        """序列化采集草稿，供 Agent 逐篇深度清洗并调用 Java MCP 写入。"""
-        documents = []
-        failures = []
-        for outcome in self.outcomes:
-            if outcome.document is not None:
-                documents.append({
-                    "doc_key": outcome.document.doc_key,
-                    "source_id": outcome.document.source_id,
-                    "source_name": outcome.document.source_name,
-                    "external_id": outcome.document.external_id,
-                    "title": outcome.document.title,
-                    "url": outcome.document.url,
-                    "published_at": outcome.document.published_at,
-                    "preliminary_content": outcome.document.preliminary_content,
-                })
-            elif outcome.reason:
-                failures.append({"url": outcome.url, "status": outcome.status, "reason": outcome.reason})
-        return json.dumps(
-            {
-                "source_id": self.source_id,
-                "documents": documents,
-                "skipped_count": self.skipped_count,
-                "failures": failures,
-                "listing_error": self.listing_error,
-            },
-            ensure_ascii=False,
-        )

@@ -2,8 +2,14 @@ package com.threatweave.threatweave;
 
 import com.threatweave.common.exception.BusinessException;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -11,9 +17,11 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ThreatWeaveServiceImpl implements ThreatWeaveService {
     private final JdbcTemplate jdbcTemplate;
+    private final ThreatWeaveReadQueryPolicy readQueryPolicy;
 
-    public ThreatWeaveServiceImpl(JdbcTemplate jdbcTemplate) {
+    public ThreatWeaveServiceImpl(JdbcTemplate jdbcTemplate, ThreatWeaveReadQueryPolicy readQueryPolicy) {
         this.jdbcTemplate = jdbcTemplate;
+        this.readQueryPolicy = readQueryPolicy;
     }
 
     @Override
@@ -94,6 +102,8 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
     public Map<String, Object> writeExtraction(ThreatWeaveRequests.ExtractionWriteRequest request) {
         Map<String, Object> document = getDocument(request.documentId());
         String documentContent = (String) document.get("content");
+        // 本次抽取代表该文档的完整最新事实；旧出处必须先移除，避免陈旧事实继续可查询。
+        jdbcTemplate.update("DELETE FROM threatweave.provenance WHERE document_id = ?", request.documentId());
         int entityCount = 0;
         int relationCount = 0;
         for (ThreatWeaveRequests.EntityInput entity : request.entities()) {
@@ -127,6 +137,7 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
                 relationCount++;
             }
         }
+        removeOrphanedGraphData();
         return Map.of("documentId", request.documentId(), "entitiesProcessed", entityCount, "relationsProcessed", relationCount);
     }
 
@@ -163,6 +174,92 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
         relationArguments.add(limit);
         List<Map<String, Object>> relations = jdbcTemplate.queryForList(relationSql, relationArguments.toArray());
         return Map.of("entities", entities, "relations", relations);
+    }
+
+    @Override
+    public Map<String, Object> describeReadModel() {
+        return Map.of(
+            "schemaVersion", 1,
+            "datasets", List.of(
+                Map.of("name", "threatweave.documents", "primaryKey", "id", "semantics", "清洗后的规范情报正文与来源元数据",
+                    "fields", List.of(field("id", "文档主键"), field("doc_key", "来源内稳定标识"), field("source_id", "来源标识"), field("source_name", "来源显示名"), field("external_id", "来源文章标识"), field("title", "清洗后的标题"), field("url", "文章 URL"), field("published_at", "来源发布时间"), field("content", "清洗后的 Markdown 正文"), field("content_sha256", "正文哈希"), field("formatted_at", "格式化时间"), field("ingested_at", "入库时间"))),
+                Map.of("name", "threatweave.entities", "primaryKey", "id", "semantics", "规范化实体和语义角色",
+                    "fields", List.of(field("id", "实体主键"), field("entity_type", "实体类型"), field("canonical_value", "规范值"), field("display_name", "展示名称"), field("semantic_role", "语义角色"), field("confidence", "置信度"), field("first_seen_at", "首次观察时间"), field("last_seen_at", "最后观察时间"), field("updated_at", "更新时间"))),
+                Map.of("name", "threatweave.entity_aliases", "primaryKey", "id", "semantics", "实体别名",
+                    "fields", List.of(field("id", "别名主键"), field("entity_id", "所属实体"), field("alias", "别名文本"), field("source_url", "别名来源 URL"))),
+                Map.of("name", "threatweave.relations", "primaryKey", "id", "semantics", "有向实体关系",
+                    "fields", List.of(field("id", "关系主键"), field("src_entity_id", "源实体"), field("dst_entity_id", "目标实体"), field("relation_type", "关系类型"), field("confidence", "置信度"), field("first_seen_at", "首次观察时间"), field("last_seen_at", "最后观察时间"), field("updated_at", "更新时间"))),
+                Map.of("name", "threatweave.provenance", "primaryKey", "id", "semantics", "实体或关系对应的文档证据与字符范围",
+                    "fields", List.of(field("id", "证据主键"), field("document_id", "证据文档"), field("entity_id", "被支持的实体，可为空"), field("relation_id", "被支持的关系，可为空"), field("evidence_quote", "原文引文"), field("char_start", "引文起始字符偏移"), field("char_end", "引文结束字符偏移"), field("extractor", "抽取器标识"), field("confidence", "证据置信度"))),
+                Map.of("name", "workflow.document_processing", "primaryKey", "doc_key", "semantics", "导入 Pipeline 的状态和失败信息",
+                    "fields", List.of(field("doc_key", "来源内稳定标识"), field("source_id", "来源标识"), field("document_id", "规范文档主键"), field("source_fingerprint", "采集正文哈希"), field("formatted_content_sha256", "规范正文哈希"), field("status", "pending/running/completed/failed"), field("last_failed_stage", "失败阶段"), field("last_error", "受限错误信息"), field("formatted_at", "格式化时间"), field("extracted_at", "抽取完成时间"), field("updated_at", "状态更新时间")))
+            ),
+            "joins", List.of(
+                "provenance.document_id = documents.id",
+                "provenance.entity_id = entities.id",
+                "provenance.relation_id = relations.id",
+                "relations.src_entity_id = entities.id 或 relations.dst_entity_id = entities.id",
+                "entity_aliases.entity_id = entities.id",
+                "document_processing.doc_key = documents.doc_key"
+            ),
+            "examples", List.of(
+                "SELECT id, title, url, formatted_at FROM threatweave.documents ORDER BY formatted_at DESC LIMIT 20",
+                "SELECT entity_type, canonical_value, confidence FROM threatweave.entities ORDER BY updated_at DESC LIMIT 20"
+            ),
+            "constraints", Map.of("maxRows", ThreatWeaveReadQueryPolicy.MAX_ROWS, "parameters", "使用 ? 占位符并按顺序提供 parameters")
+        );
+    }
+
+    @Override
+    public Map<String, Object> executeReadQuery(ThreatWeaveRequests.ReadQueryRequest request) {
+        String validated = readQueryPolicy.validate(request.sql());
+        List<Object> parameters = request.parameters() == null ? List.of() : request.parameters();
+        String boundedSql = "SELECT * FROM (" + validated + ") AS threatweave_read_result LIMIT " + ThreatWeaveReadQueryPolicy.MAX_ROWS;
+        List<Map<String, Object>> rows = jdbcTemplate.execute((ConnectionCallback<List<Map<String, Object>>>) connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(boundedSql)) {
+                statement.setQueryTimeout(3);
+                statement.setMaxRows(ThreatWeaveReadQueryPolicy.MAX_ROWS);
+                for (int index = 0; index < parameters.size(); index++) {
+                    statement.setObject(index + 1, parameters.get(index));
+                }
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    return readRows(resultSet, 1024 * 1024);
+                }
+            }
+        });
+        return Map.of("rows", rows, "rowCount", rows.size(), "maxRows", ThreatWeaveReadQueryPolicy.MAX_ROWS);
+    }
+
+    private static List<Map<String, Object>> readRows(ResultSet resultSet, int maxBytes) throws java.sql.SQLException {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        ResultSetMetaData metadata = resultSet.getMetaData();
+        int byteCount = 0;
+        while (resultSet.next()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            for (int index = 1; index <= metadata.getColumnCount(); index++) {
+                Object value = resultSet.getObject(index);
+                row.put(metadata.getColumnLabel(index), value);
+                byteCount += String.valueOf(value).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            }
+            if (byteCount > maxBytes) {
+                break;
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private static Map<String, String> field(String name, String semantics) {
+        return Map.of("name", name, "semantics", semantics);
+    }
+
+    private void removeOrphanedGraphData() {
+        jdbcTemplate.update("DELETE FROM threatweave.relations r WHERE NOT EXISTS (SELECT 1 FROM threatweave.provenance p WHERE p.relation_id = r.id)");
+        jdbcTemplate.update("""
+            DELETE FROM threatweave.entities e
+            WHERE NOT EXISTS (SELECT 1 FROM threatweave.provenance p WHERE p.entity_id = e.id)
+              AND NOT EXISTS (SELECT 1 FROM threatweave.relations r WHERE r.src_entity_id = e.id OR r.dst_entity_id = e.id)
+            """);
     }
 
     private long upsertEntity(ThreatWeaveRequests.EntityInput entity) {

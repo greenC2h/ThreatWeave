@@ -5,7 +5,7 @@ from mcp_server.server_config import MCP_HOST, MCP_PORT, MCP_PATH
 
 mcp = FastMCP(
     name="ThreatWeave-MCP-Server",
-    instructions="调用 ThreatWeave Java REST API 的威胁情报 CRUD 工具集",
+    instructions="只读查询 ThreatWeave 业务数据的受限 SQL 工具集",
     version="1.0.0",
     lifespan=mcp_lifespan,
 )

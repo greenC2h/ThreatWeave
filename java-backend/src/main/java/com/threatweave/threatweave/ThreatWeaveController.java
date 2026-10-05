@@ -55,4 +55,14 @@ public class ThreatWeaveController {
                                 @RequestParam(defaultValue = "100") @Min(1) @Max(500) int limit) {
         return Result.success(service.queryGraph(query, documentIds, limit));
     }
+
+    @GetMapping("/read-model")
+    public Result<?> describeReadModel() {
+        return Result.success(service.describeReadModel());
+    }
+
+    @PostMapping("/read-query")
+    public Result<?> executeReadQuery(@Valid @RequestBody ThreatWeaveRequests.ReadQueryRequest request) {
+        return Result.success(service.executeReadQuery(request));
+    }
 }

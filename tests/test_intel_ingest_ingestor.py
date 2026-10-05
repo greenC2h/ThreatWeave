@@ -186,8 +186,8 @@ html:
 """.strip(),
                 encoding="utf-8",
             )
-            old = os.environ.get("INTEL_INGESTION_SOURCES_DIR")
-            os.environ["INTEL_INGESTION_SOURCES_DIR"] = tmp
+            old = os.environ.get("THREATWEAVE_SOURCES_DIR")
+            os.environ["THREATWEAVE_SOURCES_DIR"] = tmp
             try:
                 fetcher = RoutingFetcher({
                     LISTING_URL: FetchResult("ok", LISTING_URL, status_code=200, content=LISTING_HTML.encode("utf-8")),
@@ -197,15 +197,14 @@ html:
                 report = await collect_source("cncert_cc_threat_warning", fetcher=fetcher)
             finally:
                 if old is None:
-                    os.environ.pop("INTEL_INGESTION_SOURCES_DIR", None)
+                    os.environ.pop("THREATWEAVE_SOURCES_DIR", None)
                 else:
-                    os.environ["INTEL_INGESTION_SOURCES_DIR"] = old
+                    os.environ["THREATWEAVE_SOURCES_DIR"] = old
 
         self.assertEqual(report.collected_count, 2)
-        payload = report.to_agent_payload()
-        self.assertIn('"documents"', payload)
-        self.assertIn('"preliminary_content"', payload)
-        self.assertNotIn('"content_sha256"', payload)
+        self.assertTrue(report.outcomes[0].document.preliminary_content)
+        self.assertTrue(report.outcomes[1].document.preliminary_content)
+        self.assertNotEqual(report.outcomes[0].document.doc_key, report.outcomes[1].document.doc_key)
 
     async def test_collect_source_rejects_unknown_source(self) -> None:
         with self.assertRaises(ValueError):

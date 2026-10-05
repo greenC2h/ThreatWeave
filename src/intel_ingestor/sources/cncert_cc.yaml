@@ -9,7 +9,6 @@ required_environment_variables: []
 article_url_pattern: https://www.cert.org.cn/publish/main/11/20\d\d/.*
 html:
   charset: utf-8
-  # 该站点列表页把真实文章 URL 放在 onclick 的 window.open(...) 中，而不是 href。
   article_link_attribute: onclick
   content_selector: div.artil_content
   title_selector: h2.artil_tit

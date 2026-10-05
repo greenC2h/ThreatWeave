@@ -248,8 +248,8 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
             threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
                 "messages": [
                     {"role": "human", "content": "生成 Markdown 威胁分析报告和 HTML 关系图"},
-                    {"type": "tool", "name": "threat_graph_query", "content": json.dumps({
-                        "entities": [{"id": 1, "canonical_value": "OpenClaw"}], "relations": [],
+                    {"type": "tool", "name": "execute_read_query", "content": json.dumps({
+                        "rows": [{"id": 1, "canonical_value": "OpenClaw"}], "rowCount": 1,
                     })},
                     {"role": "assistant", "content": "分析完成，但未写入文件"},
                 ],
