@@ -85,6 +85,26 @@ class DeliverableTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(registered[0]["type"], "sandbox_deliverable")
         self.assertEqual(next(iter(store.entries.values()))["user_id"], "user-1")
 
+    def test_extracts_path_from_sync_subagent_summary(self) -> None:
+        specifications = extract_deliverable_specs(
+            "Markdown 报告已生成：/deliverables/threatweave-report.md"
+        )
+
+        self.assertEqual(specifications, [{
+            "path": "/deliverables/threatweave-report.md",
+            "filename": "threatweave-report.md",
+            "mime_type": "text/markdown",
+            "label": "threatweave-report.md",
+        }])
+
+    def test_extracts_machine_marker_from_sync_subagent_summary(self) -> None:
+        specifications = extract_deliverable_specs(
+            '报告已生成。SYNC_DELIVERABLE: {"type":"deliverable_spec","path":"/deliverables/report.md","filename":"report.md","mime_type":"text/markdown","label":"下载报告"}'
+        )
+
+        self.assertEqual(specifications[0]["path"], "/deliverables/report.md")
+        self.assertEqual(specifications[0]["label"], "下载报告")
+
     async def test_tool_rejects_path_like_filename(self) -> None:
         sandbox = FakeSandbox()
         tool = create_write_deliverable_tool(sandbox)

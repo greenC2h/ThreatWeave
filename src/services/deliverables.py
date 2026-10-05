@@ -125,7 +125,30 @@ def extract_deliverable_specs(content: Any, depth: int = 0) -> list[dict[str, st
         try:
             return extract_deliverable_specs(json.loads(content), depth + 1)
         except json.JSONDecodeError:
-            return []
+            # 同步子 Agent 的最终摘要可能只保留沙箱路径；路径仍受控，
+            # 可以据扩展名恢复登记所需的元数据，实际文件已由工具写入沙箱。
+            specifications: list[dict[str, str]] = []
+            for marker in re.finditer(r"SYNC_DELIVERABLE\s*:\s*(\{.*?\})", content, re.DOTALL):
+                try:
+                    specifications.extend(extract_deliverable_specs(json.loads(marker.group(1)), depth + 1))
+                except json.JSONDecodeError:
+                    continue
+            if specifications:
+                return specifications
+            for match in re.finditer(r"/deliverables/([A-Za-z0-9][A-Za-z0-9_.-]{0,119}\.(?:md|html|json))", content):
+                filename = match.group(1)
+                mime_type = {
+                    ".md": "text/markdown",
+                    ".html": "text/html",
+                    ".json": "application/json",
+                }[PurePosixPath(filename).suffix.lower()]
+                specifications.append({
+                    "path": f"/deliverables/{filename}",
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "label": filename,
+                })
+            return specifications
     if isinstance(content, list):
         return [
             specification

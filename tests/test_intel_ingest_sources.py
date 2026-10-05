@@ -13,8 +13,8 @@ from intel_ingestor.sources import list_source_ids, load_source, require_enabled
 class SourcesConfigTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self._old = os.environ.get("INTEL_INGESTION_SOURCES_DIR")
-        os.environ["INTEL_INGESTION_SOURCES_DIR"] = self._tmp.name
+        self._old = os.environ.get("THREATWEAVE_SOURCES_DIR")
+        os.environ["THREATWEAVE_SOURCES_DIR"] = self._tmp.name
         (Path(self._tmp.name) / "cncert.yaml").write_text(
             """
 source_id: cncert_cc_threat_warning
@@ -47,9 +47,9 @@ article_url_pattern: https://example.com/.*
     def tearDown(self) -> None:
         self._tmp.cleanup()
         if self._old is None:
-            os.environ.pop("INTEL_INGESTION_SOURCES_DIR", None)
+            os.environ.pop("THREATWEAVE_SOURCES_DIR", None)
         else:
-            os.environ["INTEL_INGESTION_SOURCES_DIR"] = self._old
+            os.environ["THREATWEAVE_SOURCES_DIR"] = self._old
 
     def test_list_source_ids_uses_field(self) -> None:
         self.assertEqual(set(list_source_ids()), {"cncert_cc_threat_warning", "old_source"})

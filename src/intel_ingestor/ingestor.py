@@ -258,6 +258,9 @@ async def collect_source(
         if not re.compile(source.article_url_pattern).match(article_url):
             raise ValueError(f"文章 URL 不属于已批准来源 {source.source_id}")
         refs = [ArticleRef(url=article_url, title=None, published_at=None)]
+    elif source.parser_type == "hillstone_hot_threat_json":
+        # 该来源配置的是公开详情页而不是列表页，入口 URL 本身就是待处理文章。
+        refs = [ArticleRef(url=source.entry_url, title=None, published_at=None)]
     else:
         listing = await page_fetcher.fetch(source.entry_url)
         if listing.status != "ok":

@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from agent.schema import AuthResponse, ChatRequest, ChatResponse, ResumeChatRequest, ThreatWeaveContext
@@ -27,6 +28,7 @@ from api.message_utils import (
     content_to_text, extract_sandbox_deliverables, extract_visualization, make_session_title,
     serialize_interrupt as _serialize_interrupt,
 )
+from services.deliverables import extract_deliverable_specs
 from services.visualization_artifacts import (
     EXPIRED_VISUALIZATION_SVG,
     get_visualization_path,
@@ -35,6 +37,47 @@ from services.visualization_artifacts import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _state_messages(state: Any) -> list[Any]:
+    """从 LangGraph 状态中取出可检查交付声明的消息。"""
+    values = getattr(state, "values", state if isinstance(state, dict) else {})
+    messages = values.get("messages", []) if isinstance(values, dict) else []
+    return messages if isinstance(messages, list) else []
+
+
+async def _register_sync_deliverables(
+    *,
+    agent: Any,
+    config: dict[str, Any],
+    user_id: str,
+    thread_id: str,
+    messages: list[Any],
+    task_tool_ids: set[str],
+) -> list[dict[str, str]]:
+    """登记同步 threat_handle 写入的文件，并把 artifact 回写到 task 工具消息。"""
+    specifications = [
+        specification
+        for message in messages
+        for specification in extract_deliverable_specs(
+            getattr(message, "content", message.get("content", "") if isinstance(message, dict) else "")
+        )
+    ]
+    unique = {item["path"]: item for item in specifications}
+    if not unique:
+        return []
+    registered = await agent_loader.register_user_deliverables(
+        user_id, f"{thread_id}:{uuid.uuid4().hex}", list(unique.values()),
+    )
+    if task_tool_ids:
+        await agent.aupdate_state(
+            config,
+            {"messages": [ToolMessage(
+                content=registered,
+                tool_call_id=tool_call_id,
+            ) for tool_call_id in task_tool_ids]},
+        )
+    return registered
 
 
 def _agent_error_detail(exc: Exception) -> tuple[int, str]:
@@ -366,6 +409,22 @@ async def _run_chat_unlocked(request: ChatRequest, thread_id: str) -> ChatRespon
     interrupts = result.get("__interrupt__", []) if isinstance(result, dict) else []
     if not answer and not interrupts:
         raise HTTPException(status_code=502, detail="Agent 未返回有效回答")
+    result_messages = result.get("messages", []) if isinstance(result, dict) else []
+    task_tool_ids = {
+        str(call.get("id"))
+        for message in result_messages
+        for call in (getattr(message, "tool_calls", None) or (message.get("tool_calls", []) if isinstance(message, dict) else []))
+        if isinstance(call, dict) and call.get("name") == "task" and call.get("id")
+    }
+    if not interrupts:
+        await _register_sync_deliverables(
+            agent=agent,
+            config=config,
+            user_id=request.user_id,
+            thread_id=thread_id,
+            messages=result_messages,
+            task_tool_ids=task_tool_ids,
+        )
     await _bind_async_tasks_from_result(
         result,
         user_id=request.user_id,
@@ -445,6 +504,7 @@ async def _stream_response_unlocked(
     tool_call_ids: dict[str, str] = {}
     tool_subagent_names: dict[str, str] = {}
     pending_tool_ids: set[str] = set()
+    delegation_tool_ids: set[str] = set()
     pending_interrupts: dict[str, dict[str, Any]] = {}
     answer_parts: list[str] = []
     assistant_message_id: str | None = None
@@ -524,6 +584,8 @@ async def _stream_response_unlocked(
                 args = tool_chunk.get("args")
                 if tool_name and tool_call_id not in pending_tool_ids:
                     pending_tool_ids.add(tool_call_id)
+                    if tool_name == "task":
+                        delegation_tool_ids.add(tool_call_id)
                     start_event = {
                         "type": "tool_start",
                         "tool_call_id": tool_call_id,
@@ -625,10 +687,44 @@ async def _stream_response_unlocked(
                 }
             )
 
+        get_state = getattr(agent, "aget_state", None)
+        state = None
+        registered_deliverables: list[dict[str, str]] = []
+        if not pending_interrupts and callable(get_state):
+            state = await get_state(config)
+            registered_deliverables = await _register_sync_deliverables(
+                agent=agent,
+                config=config,
+                user_id=request.user_id,
+                thread_id=thread_id,
+                messages=_state_messages(state),
+                task_tool_ids=delegation_tool_ids,
+            )
+            for tool_call_id in delegation_tool_ids:
+                if registered_deliverables:
+                    yield _create_sse_message({
+                        "type": "tool_result",
+                        "tool_call_id": tool_call_id,
+                        "tool_name": "task",
+                        "text": "同步子 Agent 已生成交付件。",
+                        "status": "done",
+                        "tool_status": "done",
+                        "deliverables": [
+                            {
+                                **item,
+                                "download_src": f"/deliverables/{item['artifact_id']}?user_id={request.user_id}",
+                                "preview_src": (
+                                    f"/deliverables/{item['artifact_id']}?user_id={request.user_id}&preview=1"
+                                    if item["mime_type"] == "text/html" else None
+                                ),
+                            }
+                            for item in registered_deliverables
+                        ],
+                    })
+
         # 只有图已结束并完成持久化后才开放人工恢复；同一中断会跨图冒泡，按 ID 去重。
         # 子图事件可能携带中间层 ID；恢复必须使用根图 checkpoint 中的最终 ID，
         # 否则 Command 会重放子图并再次产生同一审批，而不会执行已批准的工具。
-        get_state = getattr(agent, "aget_state", None)
         if pending_interrupts and callable(get_state):
             state = await get_state(config)
             checkpoint_interrupts = getattr(state, "interrupts", ()) or ()

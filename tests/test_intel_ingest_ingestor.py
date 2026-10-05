@@ -164,6 +164,45 @@ class CollectArticleTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CollectSourceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_collect_source_treats_hillstone_entry_as_detail_article(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "hillstone_hot_threat.yaml").write_text(
+                """
+source_id: hillstone_hot_threat
+display_name: 山石云瞻热点威胁
+enabled: true
+entry_url: https://ti.hillstonenet.com.cn/hotthreat/detail?id=4715
+parser_type: hillstone_hot_threat_json
+minimum_interval_seconds: 86400
+license: public_information_subject_to_source_terms
+article_url_pattern: https://ti\\.hillstonenet\\.com\\.cn/hotthreat/detail\\?id=\\d+
+fetch_url_template: https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/detail?id={id}
+external_id_query_parameter: id
+html: {}
+""".strip(),
+                encoding="utf-8",
+            )
+            old = os.environ.get("THREATWEAVE_SOURCES_DIR")
+            os.environ["THREATWEAVE_SOURCES_DIR"] = tmp
+            try:
+                report = await collect_source(
+                    "hillstone_hot_threat",
+                    max_articles=1,
+                    fetcher=RoutingFetcher({
+                        HILLSTONE_API_URL: FetchResult(
+                            "ok", HILLSTONE_API_URL, status_code=200, content=HILLSTONE_JSON.encode("utf-8"),
+                        ),
+                    }),
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("THREATWEAVE_SOURCES_DIR", None)
+                else:
+                    os.environ["THREATWEAVE_SOURCES_DIR"] = old
+
+        self.assertEqual(report.collected_count, 1)
+        self.assertEqual(report.outcomes[0].document.external_id, "4715")
+
     async def test_collect_source_returns_documents_for_agent_not_database_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             yaml_path = Path(tmp) / "cncert_cc_threat_warning.yaml"

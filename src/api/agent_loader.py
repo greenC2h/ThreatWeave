@@ -341,6 +341,21 @@ class AgentLoader:
         )
         return [{key: value for key, value in item.items() if key != "type"} for item in registered]
 
+    async def register_user_deliverables(
+        self,
+        user_id: str,
+        delivery_id: str,
+        specifications: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """登记同步子 Agent 已写入当前用户沙箱的交付件。"""
+        await self.initialize()
+        assert self._store is not None
+        return await DeliverableRegistry(self._store).register(
+            user_id=user_id,
+            delivery_id=delivery_id,
+            specifications=specifications,
+        )
+
     async def download_sandbox_deliverable(
         self,
         user_id: str,
