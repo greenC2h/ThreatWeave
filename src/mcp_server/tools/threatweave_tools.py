@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mcp_server.http_base import request_threatweave_api
 from mcp_server.schema import (
@@ -20,6 +20,37 @@ from intelligence_workflow.repository import WorkflowRepository
 
 
 MAX_DOCUMENT_CHUNK_CHARACTERS = 8_000
+
+DocumentId = Annotated[int, Field(gt=0, description="要读取、校验或写入的格式化情报文档 ID。")]
+DocumentAccessToken = Annotated[str, Field(description="本次格式化文档写入所需的访问令牌。")]
+ExtractionAccessToken = Annotated[str, Field(description="本次抽取草稿保存或提交所需的访问令牌。")]
+FormattedContent = Annotated[str, Field(description="已清洗并整理为 Markdown 的完整文档正文。")]
+DocumentTitle = Annotated[str | None, Field(description="可选的文档标题；省略时保留现有标题或由系统确定。")]
+ChunkIndex = Annotated[int, Field(ge=0, description="要读取的正文分块序号，从 0 开始。")]
+MaxChunkCharacters = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=MAX_DOCUMENT_CHUNK_CHARACTERS,
+        description="每个正文分块允许的最大字符数，默认 8000。",
+    ),
+]
+EntityCandidates = Annotated[
+    list[ExtractionEntityCandidate],
+    Field(description="待校验或写入的实体候选列表；每项必须包含规范值和正文证据。"),
+]
+RelationCandidates = Annotated[
+    list[ExtractionRelationCandidate] | None,
+    Field(description="可选的关系候选列表；每项必须使用平面源端点、目标端点和正文证据。"),
+]
+GraphQuery = Annotated[str, Field(description="可选的实体名称、IOC、CVE 或关键词；为空时查询指定范围内全部数据。")]
+GraphDocumentIds = Annotated[
+    list[int] | None,
+    Field(description="可选的文档 ID 列表；提供时仅查询这些文档关联的实体和关系。"),
+]
+GraphLimit = Annotated[int, Field(ge=1, le=500, description="最多返回的实体和关系数量，默认 100。")]
+
+
 def _http_client(ctx: Context):
     """获取 MCP 生命周期内共享的 Java API 客户端。"""
     return ctx.request_context.lifespan_context["http_client"]
@@ -218,15 +249,22 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="threat_document_upsert")
     async def upsert_document(
-        access_token: str,
-        content: str,
-        title: str | None = None,
+        access_token: DocumentAccessToken,
+        content: FormattedContent,
+        title: DocumentTitle = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """写入或覆盖一份格式化情报文档，仅供 intel_ingestor 使用。
+        """写入格式化情报文档。
 
-        工作流签发的一次性授权绑定文档键和来源元数据，模型只提交清洗后的正文，
-        从而不能借由提示注入创建或覆盖其他文章。
+        使用已清洗的 Markdown 正文创建或更新当前目标文档。
+
+        Args:
+            access_token: 本次文档写入所需的访问令牌。
+            content: 完整的格式化 Markdown 正文。
+            title: 可选的文档标题。
+
+        Returns:
+            写入后的文档标识和文档元数据。
         """
         grant = await WorkflowRepository().consume_formatting_access_grant(access_token)
         return await request_threatweave_api(_http_client(ctx), "POST", "/threatweave/documents", json={
@@ -243,12 +281,23 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="threat_document_get")
     async def get_document(
-        document_id: int,
-        chunk_index: int = 0,
-        max_chunk_characters: int = MAX_DOCUMENT_CHUNK_CHARACTERS,
+        document_id: DocumentId,
+        chunk_index: ChunkIndex = 0,
+        max_chunk_characters: MaxChunkCharacters = MAX_DOCUMENT_CHUNK_CHARACTERS,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """按受控字符预算读取格式化文档的一块，供 B 逐块抽取候选。"""
+        """读取格式化情报文档的一段正文。
+
+        文档较长时按段落切分；返回当前正文片段、分块序号和总分块数。
+
+        Args:
+            document_id: 要读取的格式化文档 ID。
+            chunk_index: 要读取的正文分块序号，从 0 开始。
+            max_chunk_characters: 单个正文分块的最大字符数。
+
+        Returns:
+            文档元数据、当前正文片段、chunkIndex 和 chunkCount。
+        """
         if not 1 <= max_chunk_characters <= MAX_DOCUMENT_CHUNK_CHARACTERS:
             raise ValueError(f"max_chunk_characters 必须在 1 到 {MAX_DOCUMENT_CHUNK_CHARACTERS} 之间")
         document = await request_threatweave_api(
@@ -269,22 +318,42 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="threat_extraction_get")
     async def get_extraction(
-        document_id: int,
+        document_id: DocumentId,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """读取已入库的抽取结果与精确出处，仅供 B 导出交付件。"""
+        """读取文档已保存的实体、关系和证据。
+
+        用于查看或导出既有抽取结果，不重新抽取内容。
+
+        Args:
+            document_id: 要读取抽取结果的格式化文档 ID。
+
+        Returns:
+            文档 ID、实体列表、关系列表及各项证据。
+        """
         return await request_threatweave_api(
             _http_client(ctx), "GET", f"/threatweave/documents/{document_id}/extraction"
         ) or {"document_id": document_id, "entities": [], "relations": []}
 
     @mcp.tool(name="validate_extraction_evidence")
     async def validate_extraction_evidence(
-        document_id: int,
-        entities: list[ExtractionEntityCandidate],
-        relations: list[ExtractionRelationCandidate] | None = None,
+        document_id: DocumentId,
+        entities: EntityCandidates,
+        relations: RelationCandidates = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """校验实体与平面关系候选，关系必须使用 src/dstEntityType 和 src/dstCanonicalValue。"""
+        """校验实体和关系候选是否能由文档正文唯一证据支持。
+
+        在保存草稿或写入抽取结果前调用。关系必须使用平面源端点和目标端点字段。
+
+        Args:
+            document_id: 候选来源的格式化文档 ID。
+            entities: 待校验的实体候选列表。
+            relations: 可选的待校验关系候选列表。
+
+        Returns:
+            可接受的 entities、relations，以及每个被拒绝候选的原因。
+        """
         document = await request_threatweave_api(
             _http_client(ctx), "GET", f"/threatweave/documents/{document_id}"
         ) or {}
@@ -295,12 +364,23 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="threat_extraction_write")
     async def write_extraction(
-        document_id: int,
-        entities: list[ExtractionEntityCandidate],
-        relations: list[ExtractionRelationCandidate] | None = None,
+        document_id: DocumentId,
+        entities: EntityCandidates,
+        relations: RelationCandidates = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """原子写入通过校验的实体和关系；关系端点必须是平面 src/dst 字段。"""
+        """写入文档中有正文证据支持的实体和关系。
+
+        工具会校验证据；不符合要求的候选不会写入，并会在结果中说明原因。
+
+        Args:
+            document_id: 要写入抽取结果的格式化文档 ID。
+            entities: 待写入的实体候选列表。
+            relations: 可选的待写入关系候选列表。
+
+        Returns:
+            写入状态、写入结果及被拒绝候选的原因。
+        """
         document = await request_threatweave_api(
             _http_client(ctx), "GET", f"/threatweave/documents/{document_id}"
         ) or {}
@@ -319,13 +399,25 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="threat_extraction_preview")
     async def save_extraction_preview(
-        document_id: int,
-        access_token: str,
-        entities: list[ExtractionEntityCandidate],
-        relations: list[ExtractionRelationCandidate] | None = None,
+        document_id: DocumentId,
+        access_token: ExtractionAccessToken,
+        entities: EntityCandidates,
+        relations: RelationCandidates = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """校验并保存仅抽取草稿，绝不向实体、关系或出处表写入数据。"""
+        """校验并保存文档的抽取草稿。
+
+        草稿可供后续确认；本操作不会提交最终的实体和关系结果。
+
+        Args:
+            document_id: 草稿对应的格式化文档 ID。
+            access_token: 本次草稿保存所需的访问令牌。
+            entities: 要保存的实体候选列表。
+            relations: 可选的要保存关系候选列表。
+
+        Returns:
+            草稿 ID、接受的实体和关系数量，以及被拒绝候选的原因。
+        """
         repository = WorkflowRepository()
         grant = await repository.consume_draft_access_grant(access_token, "preview")
         if grant.document_id != document_id:
@@ -355,10 +447,19 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="commit_extraction_draft")
     async def commit_extraction_draft(
-        access_token: str,
+        access_token: ExtractionAccessToken,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """提交发起用户尚未过期的结构化草稿，不从 Markdown 或模型回复重建数据。"""
+        """提交已保存的抽取草稿。
+
+        将当前可用草稿中的实体和关系写入文档抽取结果。
+
+        Args:
+            access_token: 本次草稿提交所需的访问令牌。
+
+        Returns:
+            写入状态、草稿 ID、写入结果及被拒绝候选的原因。
+        """
         repository = WorkflowRepository()
         grant = await repository.consume_draft_access_grant(access_token, "commit")
         # 令牌由工作流绑定草稿、用户和正文，工具仍验证草稿状态和当前正文哈希。
@@ -398,12 +499,23 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(name="threat_graph_query")
     async def query_graph(
-        query: str = "",
-        document_ids: list[int] | None = None,
-        limit: int = 100,
+        query: GraphQuery = "",
+        document_ids: GraphDocumentIds = None,
+        limit: GraphLimit = 100,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """按文本或规范文档范围查询只读实体与关系子图，仅供 C 使用。"""
+        """查询情报库中的实体、关系及其证据。
+
+        可按关键词或指定文档范围查询；用于回答库内关联、列表和统计问题。
+
+        Args:
+            query: 可选的实体名称、IOC、CVE 或关键词；为空时查询指定范围内全部数据。
+            document_ids: 可选的文档 ID 列表；提供时仅查询这些文档关联的数据。
+            limit: 最多返回的实体和关系数量。
+
+        Returns:
+            匹配的 entities、relations 及其文档证据。
+        """
         scoped_document_ids = sorted({document_id for document_id in document_ids or [] if document_id > 0})
         return await request_threatweave_api(
             _http_client(ctx),
