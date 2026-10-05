@@ -220,6 +220,54 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
             ["requested-graph.html"],
         )
 
+    async def test_chart_only_task_keeps_only_latest_html_deliverable(self) -> None:
+        first_html = {
+            "type": "deliverable_spec",
+            "path": "/deliverables/old-graph.html",
+            "filename": "old-graph.html",
+            "mime_type": "text/html",
+            "label": "旧图谱",
+        }
+        latest_html = {
+            "type": "deliverable_spec",
+            "path": "/deliverables/latest-graph.html",
+            "filename": "latest-graph.html",
+            "mime_type": "text/html",
+            "label": "最新图谱",
+        }
+        client = SimpleNamespace(
+            runs=SimpleNamespace(list=AsyncMock(return_value=[{"status": "success"}])),
+            threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
+                "messages": [
+                    {"role": "human", "content": "重新生成一个 HTML 关系图"},
+                    {"type": "tool", "name": "write_deliverable", "content": json.dumps(first_html)},
+                    {"type": "tool", "name": "write_deliverable", "content": json.dumps(latest_html)},
+                    {"role": "assistant", "content": "图谱已重新生成。"},
+                ],
+            }))),
+        )
+
+        with (
+            patch("api.async_tasks.get_client", return_value=client),
+            patch(
+                "api.async_tasks.agent_loader.register_sandbox_deliverables",
+                new=AsyncMock(return_value=[{
+                    "artifact_id": "e" * 32,
+                    "filename": "latest-graph.html",
+                    "mime_type": "text/html",
+                    "label": "最新图谱",
+                }]),
+            ) as register_deliverables,
+            patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)),
+        ):
+            response = await get_async_task_status("task-1", user_id="u1")
+
+        self.assertEqual([item.filename for item in response.deliverables], ["latest-graph.html"])
+        self.assertEqual(
+            [item["filename"] for item in register_deliverables.await_args.args[1]],
+            ["latest-graph.html"],
+        )
+
     async def test_report_request_without_report_path_remains_an_error(self) -> None:
         """明确要求报告但子 Agent 未写入文件时，不能伪装成成功。"""
         client = SimpleNamespace(

@@ -146,7 +146,13 @@ async def create_main_agent(
     # 图谱数据访问仅由同步编排子 Agent 或相应异步子 Agent 获得。
     # 未显式传入 general-purpose 时，DeepAgents 自动装配其默认通用子 Agent，并按框架规则
     # 继承 main_tools，不在本项目覆盖其配置。
-    main_tools = [*common_tools, *async_sandbox_tools, request_additional_info]
+    main_tools = [
+        *common_tools,
+        *async_sandbox_tools,
+        request_additional_info,
+        # 主 Agent 可以自行改写用户要求的 HTML/Markdown；统一通过该工具登记下载入口。
+        create_write_deliverable_tool(sandbox_backend),
+    ]
 
     # 主 Agent 是唯一对外的同步执行图。
     # 中间件顺序具有语义：before_* 按声明顺序运行，after_* 反序运行，wrap_model_call 按洋葱模型嵌套；

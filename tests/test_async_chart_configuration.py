@@ -41,6 +41,14 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertNotIn("format_only", instructions)
         self.assertNotIn("extract_preview", instructions)
 
+    def test_main_prompt_routes_global_search_to_threat_analyst(self) -> None:
+        instructions = f"{system_prompt}\n{get_async_subagent_instructions()}"
+
+        self.assertIn("全库查询、文章列表、实体关系统计和图谱查询必须使用 `threat_analyst`", instructions)
+        self.assertIn("这里仅限用户明确指定某一篇文章并要求其中间产物 Markdown", instructions)
+        self.assertIn("用户明确指定一篇文章（标题、URL 或唯一文章标识）", instructions)
+        self.assertIn("不得使用 `start_async_task` 或 `threat_analyst`", instructions)
+
     def test_registers_only_the_threat_analyst_async_graph(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         config = json.loads((project_root / "langgraph.json").read_text(encoding="utf-8"))

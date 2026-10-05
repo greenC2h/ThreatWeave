@@ -186,6 +186,19 @@ def _extract_task_deliverables(values: Any, content: str) -> list[dict[str, str]
     return list({item["path"]: item for item in specifications}.values())
 
 
+def _keep_latest_requested_deliverables(
+    specifications: list[dict[str, str]],
+    requested_mime_types: set[str],
+) -> list[dict[str, str]]:
+    """每种用户明确请求的交付类型只保留本次任务最后生成的一个文件。"""
+    latest: dict[str, dict[str, str]] = {}
+    for specification in specifications:
+        mime_type = specification["mime_type"]
+        if mime_type in requested_mime_types:
+            latest[mime_type] = specification
+    return list(latest.values())
+
+
 def _sanitize_task_content(content: str) -> str:
     """移除系统登记报告和图表时不应展示的内部标识。"""
     content = DELIVERABLE_LINE_PATTERN.sub("", content)
@@ -232,10 +245,10 @@ async def get_async_task_status(
         report_requested = _task_requests_report(values)
         deliverable_specs = _extract_task_deliverables(values, content)
         requested_mime_types = _requested_deliverable_mime_types(values)
-        deliverable_specs = [
-            specification for specification in deliverable_specs
-            if specification["mime_type"] in requested_mime_types
-        ]
+        deliverable_specs = _keep_latest_requested_deliverables(
+            deliverable_specs,
+            requested_mime_types,
+        )
         content = _sanitize_task_content(content)
     except Exception as exc:
         # run 成功不代表已读到结果；失败必须可重试，不能写入占位成功消息。
