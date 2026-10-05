@@ -103,6 +103,23 @@ class ThreatPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.documents[0].action, "skipped_unchanged")
 
+    async def test_direct_article_url_does_not_require_source_allowlist(self) -> None:
+        pipeline = ThreatPipeline(repository=FakeRepository(), gateway=FakeGateway(), model=FakeModel())
+        report = CollectionReport(
+            "direct_url",
+            (CollectionOutcome("https://unregistered.example/article", "ok", document=collected_document()),),
+        )
+
+        with patch("threat_pipeline.pipeline.collect_source", AsyncMock(return_value=report)) as collect:
+            result = await pipeline.run(
+                ThreatPipelineRequest(actor_id="u1", article_url="https://unregistered.example/article")
+            )
+
+        collect.assert_awaited_once_with(
+            "direct_url", max_articles=3, article_url="https://unregistered.example/article"
+        )
+        self.assertEqual(result.documents[0].action, "ingested")
+
     def test_request_requires_source_or_article_url(self) -> None:
         with self.assertRaises(ValueError):
             ThreatPipelineRequest(actor_id="u1")

@@ -22,7 +22,7 @@ from intel_ingestor.schema import (
     CollectionReport,
     SourceConfig,
 )
-from intel_ingestor.sources import load_source, require_enabled
+from intel_ingestor.sources import DIRECT_URL_SOURCE_ID, direct_url_source, load_source, require_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -249,14 +249,12 @@ async def collect_source(
     article_url: str | None = None,
     fetcher: PageFetcher | None = None,
 ) -> CollectionReport:
-    """采集来源文章草稿，支持全量列表页或一篇已批准的文章 URL。"""
-    source = load_source(source_id)
+    """采集来源文章草稿，支持全量列表页或任意一篇文章直链。"""
+    source = direct_url_source(article_url) if source_id == DIRECT_URL_SOURCE_ID and article_url else load_source(source_id)
     require_enabled(source)
 
     page_fetcher = fetcher or PageFetcher()
     if article_url:
-        if not re.compile(source.article_url_pattern).match(article_url):
-            raise ValueError(f"文章 URL 不属于已批准来源 {source.source_id}")
         refs = [ArticleRef(url=article_url, title=None, published_at=None)]
     elif source.parser_type == "hillstone_hot_threat_json":
         # 该来源配置的是公开详情页而不是列表页，入口 URL 本身就是待处理文章。

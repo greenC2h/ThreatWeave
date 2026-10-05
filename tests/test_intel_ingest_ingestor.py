@@ -245,6 +245,18 @@ html:
         self.assertTrue(report.outcomes[1].document.preliminary_content)
         self.assertNotEqual(report.outcomes[0].document.doc_key, report.outcomes[1].document.doc_key)
 
+    async def test_collect_source_accepts_unregistered_direct_url(self) -> None:
+        direct_url = "https://unregistered.example/article"
+        fetcher = RoutingFetcher({
+            direct_url: FetchResult("ok", direct_url, status_code=200, content=ARTICLE_HTML.encode("utf-8")),
+        })
+
+        report = await collect_source("direct_url", article_url=direct_url, fetcher=fetcher)
+
+        self.assertEqual(report.collected_count, 1)
+        self.assertEqual(report.outcomes[0].document.source_id, "direct_url")
+        self.assertIn("正文第一段", report.outcomes[0].document.preliminary_content)
+
     async def test_collect_source_rejects_unknown_source(self) -> None:
         with self.assertRaises(ValueError):
             await collect_source("not_a_registered_source")

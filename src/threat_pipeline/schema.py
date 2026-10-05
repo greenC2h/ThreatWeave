@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ThreatPipelineRequest(BaseModel):
-    """描述一次从批准来源到图谱事实的完整导入请求。"""
+    """描述一次从来源直链或来源配置到图谱事实的完整导入请求。"""
 
     actor_id: str = Field(min_length=1, max_length=255)
     source_id: str | None = Field(default=None, max_length=255)

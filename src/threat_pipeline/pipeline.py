@@ -6,7 +6,7 @@ import hashlib
 from uuid import uuid4
 
 from intel_ingestor.ingestor import collect_source
-from intel_ingestor.sources import resolve_source_for_article
+from intel_ingestor.sources import DIRECT_URL_SOURCE_ID
 from threat_pipeline.batching import split_document_batches
 from threat_pipeline.extraction import build_extraction_payload, split_document_content
 from threat_pipeline.gateway import CanonicalDocument, ThreatWeaveCommandGateway
@@ -32,7 +32,7 @@ class ThreatPipeline:
     async def run(self, request: ThreatPipelineRequest) -> ThreatPipelineResult:
         """完整导入一批文章；正文来源未变且已完成时不重复处理。"""
         await self._repository.ensure_schema()
-        source_id = request.source_id or resolve_source_for_article(str(request.article_url))
+        source_id = request.source_id or DIRECT_URL_SOURCE_ID
         collection = await collect_source(
             source_id, max_articles=request.max_articles, article_url=request.article_url,
         )

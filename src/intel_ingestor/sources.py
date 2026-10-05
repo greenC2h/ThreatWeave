@@ -1,9 +1,4 @@
-"""加载并校验已登记来源配置（sources/*.yaml）。
-
-来源清单只允许来自本模块的 ``sources/``（或通过
-``THREATWEAVE_SOURCES_DIR`` 显式指定的测试替身目录），采集器绝不接受
-调用方临时传入的任意 URL 作为来源。
-"""
+"""加载已登记来源配置，并为用户直链提供通用采集配置。"""
 
 from __future__ import annotations
 
@@ -19,6 +14,7 @@ from intel_ingestor.schema import SourceConfig
 logger = logging.getLogger(__name__)
 
 DEFAULT_SOURCES_DIR = Path(__file__).resolve().parent / "sources"
+DIRECT_URL_SOURCE_ID = "direct_url"
 
 _SELECTOR_KEYS = ("content_selector", "title_selector", "date_selector", "article_link_attribute")
 
@@ -48,20 +44,20 @@ def list_source_ids() -> list[str]:
     return sorted({data.get("source_id") for _, data in _iter_source_files() if data.get("source_id")})
 
 
-def resolve_source_for_article(article_url: str) -> str:
-    """根据已批准来源的 URL 规则解析一篇文章所属的唯一来源。"""
-    matches: list[str] = []
-    for source_id in list_source_ids():
-        source = load_source(source_id)
-        if not source.enabled:
-            continue
-        if re.match(source.article_url_pattern, article_url):
-            matches.append(source.source_id)
-    if not matches:
-        raise ValueError("文章 URL 不属于任何已启用的已批准情报源")
-    if len(matches) > 1:
-        raise ValueError("文章 URL 同时匹配多个情报源，请明确指定 source_id")
-    return matches[0]
+def direct_url_source(article_url: str) -> SourceConfig:
+    """为未指定来源的文章直链创建通用 HTML 采集配置。"""
+    if not re.match(r"^https?://", article_url, re.IGNORECASE):
+        raise ValueError("文章 URL 必须是 http(s) 地址")
+    return SourceConfig(
+        source_id=DIRECT_URL_SOURCE_ID,
+        display_name="用户直链文章",
+        enabled=True,
+        entry_url=article_url,
+        parser_type="generic_html",
+        minimum_interval_seconds=0,
+        license="user_supplied_url",
+        article_url_pattern=r"^https?://",
+    )
 
 
 def _find_source_path(source_id: str) -> Path | None:
