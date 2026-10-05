@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /** 提供 A 文档写入、B 抽取写入以及 C 只读图谱查询的 REST 接口。 */
 @RestController
 @RequestMapping("/api/threatweave")
@@ -32,6 +34,11 @@ public class ThreatWeaveController {
         return Result.success(service.getDocument(documentId));
     }
 
+    @GetMapping("/documents/{documentId}/extraction")
+    public Result<?> getDocumentExtraction(@PathVariable long documentId) {
+        return Result.success(service.getDocumentExtraction(documentId));
+    }
+
     @GetMapping("/documents/by-key")
     public Result<?> getDocumentByKey(@RequestParam String docKey) {
         return Result.success(service.getDocumentByKey(docKey));
@@ -44,7 +51,8 @@ public class ThreatWeaveController {
 
     @GetMapping("/graph")
     public Result<?> queryGraph(@RequestParam(defaultValue = "") String query,
+                                @RequestParam(required = false) List<Long> documentIds,
                                 @RequestParam(defaultValue = "100") @Min(1) @Max(500) int limit) {
-        return Result.success(service.queryGraph(query, limit));
+        return Result.success(service.queryGraph(query, documentIds, limit));
     }
 }

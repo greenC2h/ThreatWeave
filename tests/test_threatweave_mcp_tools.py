@@ -9,6 +9,7 @@ from mcp_server.tools.threatweave_tools import (
     _split_document_content,
     _validate_extraction_candidates,
 )
+from mcp_server.schema import ExtractionRelationCandidate
 
 
 class ExtractionRecordNormalizationTests(unittest.TestCase):
@@ -82,6 +83,61 @@ class ExtractionRecordNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(result["entities"][0]["evidence"][0]["evidenceQuote"], "CVE-2026-1234")
         self.assertEqual(result["rejected"], [])
+
+    def test_accepts_flat_relation_contract(self) -> None:
+        evidence = "NightHeron 使用 ShadowPipe。"
+        result = _validate_extraction_candidates(
+            evidence,
+            [{
+                "entityType": "threat_actor",
+                "canonicalValue": "NightHeron",
+                "evidence": "NightHeron",
+            }, {
+                "entityType": "tool",
+                "canonicalValue": "ShadowPipe",
+                "evidence": "ShadowPipe",
+            }],
+            [{
+                "srcEntityType": "threat_actor",
+                "srcCanonicalValue": "NightHeron",
+                "dstEntityType": "tool",
+                "dstCanonicalValue": "ShadowPipe",
+                "relationType": "USES",
+                "evidence": evidence,
+            }],
+        )
+
+        self.assertEqual(result["rejected"], [])
+        self.assertEqual(result["relations"][0]["relationType"], "USES")
+
+    def test_rejects_nested_relation_endpoints_with_actionable_contract_error(self) -> None:
+        result = _validate_extraction_candidates(
+            "NightHeron 使用 ShadowPipe。",
+            [],
+            [{
+                "source": {"entityType": "threat_actor", "canonicalValue": "NightHeron"},
+                "target": {"entityType": "tool", "canonicalValue": "ShadowPipe"},
+                "relationType": "USES",
+                "evidence": "NightHeron 使用 ShadowPipe。",
+            }],
+        )
+
+        self.assertIn("srcEntityType", result["rejected"][0]["reason"])
+
+    def test_relation_schema_exposes_required_flat_endpoint_fields(self) -> None:
+        schema = ExtractionRelationCandidate.model_json_schema(by_alias=True)
+
+        self.assertEqual(
+            set(schema["required"]),
+            {
+                "srcEntityType",
+                "srcCanonicalValue",
+                "dstEntityType",
+                "dstCanonicalValue",
+                "relationType",
+                "evidence",
+            },
+        )
 
 
 if __name__ == "__main__":

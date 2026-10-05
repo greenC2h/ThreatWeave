@@ -53,6 +53,22 @@ class DeliverableTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(specification["type"], "deliverable_spec")
         self.assertEqual(extract_deliverable_specs(response)[0]["filename"], "report.md")
 
+    async def test_tool_normalizes_non_ascii_model_filename(self) -> None:
+        """模型的中文展示名称不能导致已经完成的导出事务失败。"""
+        sandbox = FakeSandbox()
+        tool = create_write_deliverable_tool(sandbox)
+
+        response = await tool.ainvoke({
+            "filename": "清洗后的原文.md",
+            "content": "# 正文",
+            "mime_type": "text/markdown",
+            "label": "下载清洗后的原文",
+        })
+
+        specification = json.loads(response)
+        self.assertRegex(specification["filename"], r"^deliverable-[a-f0-9]{16}\.md$")
+        self.assertEqual(specification["label"], "下载清洗后的原文")
+
     async def test_registry_binds_metadata_to_current_user(self) -> None:
         store = FakeStore()
         registered = await DeliverableRegistry(store).register(

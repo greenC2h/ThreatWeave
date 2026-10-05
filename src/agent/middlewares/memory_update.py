@@ -201,6 +201,22 @@ def _store_value(content: str, item: Any) -> dict[str, str]:
     return {"content": content, "encoding": "utf-8", "created_at": str(created_at or now), "modified_at": now}
 
 
+async def ensure_preferences_file(store: Any, user_id: str) -> None:
+    """为新用户预创建模型可读取的空偏好文件，且绝不覆盖已有记录。"""
+    if not user_id or store is None:
+        return
+    path = preferences_file_path(user_id)
+    existing = await store.aget((user_id,), path)
+    if existing is not None:
+        return
+    await store.aput(
+        (user_id,),
+        path,
+        _store_value(_serialize_preferences(UserPreferences()), None),
+        index=False,
+    )
+
+
 class MemoryUpdateMiddleware(AgentMiddleware):
     """在每轮 ThreatWeave 回答结束后自动维护当前用户的长期偏好。"""
 

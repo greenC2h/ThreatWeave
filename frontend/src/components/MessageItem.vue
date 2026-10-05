@@ -50,6 +50,23 @@
           download
         ><DownloadSimple :size="15" weight="bold" aria-hidden="true" />下载 HTML</a>
       </div>
+      <div v-for="deliverable in deliverables" :key="deliverable.artifactId" class="visualization-preview report-download">
+        <span class="visualization-label">{{ deliverable.mimeType === 'text/html' ? 'HTML 图谱' : '文件交付物' }}</span>
+        <a
+          v-if="deliverable.previewSrc"
+          class="visualization-link"
+          :href="deliverable.previewSrc"
+          target="_blank"
+          rel="noopener"
+        >
+          <span>打开 {{ deliverable.label }}</span>
+          <ArrowUpRight :size="15" weight="bold" aria-hidden="true" />
+        </a>
+        <a class="visualization-download" :href="deliverable.downloadSrc" :download="deliverable.filename">
+          <span>下载 {{ deliverable.label }}</span>
+          <DownloadSimple :size="15" weight="bold" aria-hidden="true" />
+        </a>
+      </div>
     </template>
     <template v-else-if="message.role === 'tool'">
       <div class="tool-summary">
@@ -90,6 +107,23 @@
           download
         >
           <span>下载 HTML</span>
+          <DownloadSimple :size="15" weight="bold" aria-hidden="true" />
+        </a>
+      </div>
+      <div v-for="deliverable in deliverables" :key="deliverable.artifactId" class="visualization-preview report-download">
+        <span class="visualization-label">{{ deliverable.mimeType === 'text/html' ? 'HTML 图谱' : '文件交付物' }}</span>
+        <a
+          v-if="deliverable.previewSrc"
+          class="visualization-link"
+          :href="deliverable.previewSrc"
+          target="_blank"
+          rel="noopener"
+        >
+          <span>打开 {{ deliverable.label }}</span>
+          <ArrowUpRight :size="15" weight="bold" aria-hidden="true" />
+        </a>
+        <a class="visualization-download" :href="deliverable.downloadSrc" :download="deliverable.filename">
+          <span>下载 {{ deliverable.label }}</span>
           <DownloadSimple :size="15" weight="bold" aria-hidden="true" />
         </a>
       </div>
@@ -172,7 +206,10 @@ import {
 } from "@phosphor-icons/vue";
 
 import { renderMarkdown } from "../utils/markdown";
-import { safeImageUrl, safeVisualizationUrl, userVisibleAssistantContent } from "../utils/chatState.js";
+import {
+  safeImageUrl, safeVisualizationUrl, toolStatusLabel as resolveToolStatusLabel,
+  userVisibleAssistantContent,
+} from "../utils/chatState.js";
 
 const props = defineProps({
   message: {
@@ -197,10 +234,10 @@ const deliverables = computed(() => (props.message.deliverables || [])
     previewSrc: safeVisualizationUrl(deliverable.preview_src),
   }))
   .filter((deliverable) => deliverable.artifactId && deliverable.downloadSrc));
-const toolStatusLabel = computed(() => ({
-  calling: "正在处理", done: "已完成", failed: "执行失败", pending: "等待处理",
-  interrupted: "等待确认", cancelled: "已取消", timeout: "已超时",
-}[props.message.toolStatus] || "等待结果"));
+const toolStatusLabel = computed(() => resolveToolStatusLabel(
+  props.message.toolStatus,
+  Boolean(props.message.result || props.message.content),
+));
 
 const messageKind = computed(() => {
   if (props.message.role === "user") {

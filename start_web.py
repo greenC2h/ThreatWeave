@@ -23,6 +23,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 JAVA_BACKEND_DIR = PROJECT_ROOT / "java-backend"
 PYTHON_EXE = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+PROJECT_DOTENV_VALUES = dotenv_values(PROJECT_ROOT / ".env")
 
 BACKEND_HOST = os.environ.get("MYAGENT_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("MYAGENT_BACKEND_PORT", "18000"))
@@ -47,6 +48,12 @@ ASYNC_AGENT_PORT = int(
         os.environ.get("MYAGENT_ASYNC_CHART_PORT", "18082"),
     )
 )
+SCHEDULER_ENABLED = os.environ.get(
+    "THREATWEAVE_SCHEDULER_ENABLED",
+    PROJECT_DOTENV_VALUES.get("THREATWEAVE_SCHEDULER_ENABLED", "true") or "true",
+).lower() in {
+    "1", "true", "yes", "on",
+}
 
 # Vite 输出包含 Unicode 箭头；Windows PowerShell 的默认 GBK 输出会导致
 # 日志转发线程崩溃，因此由启动器统一使用 UTF-8 转发子进程日志。
@@ -338,13 +345,16 @@ def main() -> int:
             print("Async Agent Protocol failed to become ready.", file=sys.stderr)
             return 1
 
-        scheduler = start_process(
-            "ThreatWeave Scheduler",
-            scheduler_command(),
-            PROJECT_ROOT,
-            environment,
-        )
-        processes.append(scheduler)
+        if SCHEDULER_ENABLED:
+            scheduler = start_process(
+                "ThreatWeave Scheduler",
+                scheduler_command(),
+                PROJECT_ROOT,
+                environment,
+            )
+            processes.append(scheduler)
+        else:
+            print("[ThreatWeave Scheduler] Disabled by THREATWEAVE_SCHEDULER_ENABLED", flush=True)
 
         backend = start_process(
             "Backend",

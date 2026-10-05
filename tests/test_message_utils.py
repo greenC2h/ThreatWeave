@@ -81,6 +81,20 @@ class VisualizationExtractionTests(unittest.TestCase):
         self.assertIsNone(extract_visualization(content))
         self.assertEqual(extract_sandbox_deliverables(content)[0]["filename"], "extraction_document_1.md")
 
+    def test_extracts_deliverable_from_fenced_workflow_json(self) -> None:
+        """历史 task 结果中的 fenced JSON 也必须保留下载交付件。"""
+        artifact_id = "f" * 32
+        content = """```json
+{"deliverables":[{"type":"sandbox_deliverable","artifact_id":"%s","filename":"document-1-formatted.md","mime_type":"text/markdown","label":"文档 1 清洗后原文"}]}
+```""" % artifact_id
+        from api.message_utils import extract_sandbox_deliverables
+
+        deliverables = extract_sandbox_deliverables(content)
+
+        self.assertEqual(len(deliverables), 1)
+        self.assertEqual(deliverables[0]["artifact_id"], artifact_id)
+        self.assertEqual(deliverables[0]["filename"], "document-1-formatted.md")
+
 
 if __name__ == "__main__":
     unittest.main()

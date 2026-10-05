@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 def _agent_error_detail(exc: Exception) -> tuple[int, str]:
     """将已知模型调用异常转换为可安全展示给用户的错误信息。"""
+    if "文章 URL 不属于任何已启用的已批准情报源" in str(exc):
+        return 400, "文章 URL 不属于已批准来源，请使用已登记来源中的文章链接"
     if getattr(exc, "status_code", None) == 402:
         return 503, "模型服务余额或配额不足，请充值或更换模型密钥后重试"
     if getattr(exc, "status_code", None) == 404:

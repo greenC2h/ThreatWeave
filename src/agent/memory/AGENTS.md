@@ -9,7 +9,7 @@
 - `intel_ingestor` 只处理工作流交给它的一批文章草稿，深度格式化并保存正文。
 - `entity_relation_extractor` 只处理工作流指定的格式化文档；每次写入必须有正文中的精确出处。`PREVIEW` 只保存用户草稿，`COMMIT` 才写图谱。
 - 用户明确要求下载时，A 使用 `formatted_markdown`、B 使用 `extraction_markdown` 生成交付件；没有该要求时不得创建文件。
-- 需要关联、图谱或报告时，使用 `start_async_task` 提交 `threat_analyst`。它只读业务库，交付 HTML 图和 Markdown 报告 artifact。
+- 需要关联、图谱或报告时，使用 `start_async_task` 提交 `threat_analyst`。它只读业务库；HTML 图与 Markdown 报告必须分别由用户明确要求，空查询不生成空图。
 - 新增、启用或停用情报源必须经过人工确认；不得在普通对话中直接修改来源配置。
 
 ## 用户可见性

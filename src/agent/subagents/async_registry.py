@@ -10,7 +10,7 @@ from typing import Any
 from deepagents import AsyncSubAgent
 
 from agent.tools.mcp_client import load_threatweave_tools
-from agent.tools.threat_graph_tools import build_threat_graph_html, generate_network_graph_html
+from agent.tools.threat_graph_tools import generate_network_graph_html
 
 
 AsyncToolLoader = Callable[[], Awaitable[list[Any]]]
@@ -31,7 +31,7 @@ class AsyncSubagentRegistration:
 
 async def _load_threat_analyst_tools() -> list[Any]:
     common_tools, threat_tools = await load_threatweave_tools({"threat_graph_query"})
-    return [*common_tools, *threat_tools, generate_network_graph_html, build_threat_graph_html]
+    return [*common_tools, *threat_tools, generate_network_graph_html]
 
 
 ASYNC_SUBAGENTS: dict[str, AsyncSubagentRegistration] = {

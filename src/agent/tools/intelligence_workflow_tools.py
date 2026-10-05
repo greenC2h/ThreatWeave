@@ -13,7 +13,7 @@ from intelligence_workflow.repository import WorkflowRepository
 from intelligence_workflow.schema import IntelligenceWorkflowMode, IntelligenceWorkflowRequest
 from intelligence_workflow.workflow import IntelligenceWorkflow, WorkflowAgents
 from intel_ingestor.sources import resolve_source_for_article
-from services.deliverables import DeliverableRegistry
+from services.deliverables import DeliverableRegistry, write_deliverable_content
 
 
 def create_intelligence_workflow(
@@ -37,6 +37,7 @@ def create_intelligence_workflow(
             draft_commit_extractor=lambda instruction: run_internal_subagent(
                 "entity_relation_extractor_draft_commit", instruction, sandbox_backend
             ),
+            deliverable_writer=lambda **kwargs: write_deliverable_content(sandbox_backend, **kwargs),
         ),
         deliverable_registry=deliverable_registry,
     )
@@ -57,7 +58,7 @@ def create_intelligence_workflow_tools(
         max_articles: int = 3,
         force_refresh: bool = False,
         requested_deliverables: list[str] | None = None,
-    ) -> str:
+    ) -> dict[str, object]:
         """同步执行指定的情报处理工作流并返回完整的紧凑结果。
 
         仅可使用 `format_only`、`extract_preview`、`ingest_full`、`extract_pending` 或
@@ -87,7 +88,13 @@ def create_intelligence_workflow_tools(
             requested_deliverables=requested_deliverables or [],
         )
         result = await create_intelligence_workflow(sandbox_backend, deliverable_registry).run(request)
-        return result.model_dump_json()
+        payload = result.model_dump(mode="json")
+        # 子 Agent 的 tool result 是 SSE 的唯一同步出口；把登记后的 artifact 放入
+        # 结构化内容，前端与历史接口才能产生受用户权限约束的下载入口。
+        payload["deliverables"] = [
+            deliverable.model_dump(mode="json") for deliverable in result.deliverables
+        ]
+        return payload
 
     @tool
     async def list_intelligence_processing(source_id: str | None = None) -> str:

@@ -42,6 +42,9 @@ description: >
 `write_deliverable` 生成清洗后的 Markdown 下载件。未明确要求时，绝不生成文件；交付件
 生成不影响正文写入结果，也不替代受控写入。
 
+当任务以 `EXPORT_FORMATTED_DOCUMENT` 开头时，正文已经是已确认的格式化版本。此时不再执行
+抓取、清洗或 Java 写入；仅保留完整正文与元数据，调用一次 `write_deliverable` 导出 Markdown。
+
 ## 完成标准
 
 - 文档具有可读的 Markdown 标题和正文，且来源 URL、来源名与格式化时间完整；

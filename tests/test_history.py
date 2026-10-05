@@ -296,6 +296,40 @@ class HistorySessionTests(unittest.IsolatedAsyncioTestCase):
             f"/deliverables/{artifact_id}?user_id=user-2",
         )
 
+    def test_fenced_task_result_restores_markdown_download(self) -> None:
+        """同步工作流的 fenced JSON 结果必须回填到委派任务卡片。"""
+        artifact_id = "e" * 32
+        messages = serialize_messages(
+            [
+                AIMessage(content="", tool_calls=[{
+                    "id": "format-task",
+                    "name": "task",
+                    "args": {"description": "导出清洗 Markdown"},
+                }]),
+                ToolMessage(
+                    tool_call_id="format-task",
+                    content=(
+                        "```json\n"
+                        "{\"deliverables\":[{\"type\":\"sandbox_deliverable\","
+                        f"\"artifact_id\":\"{artifact_id}\","
+                        "\"filename\":\"document-1-formatted.md\","
+                        "\"mime_type\":\"text/markdown\","
+                        "\"label\":\"文档 1 清洗后原文\"}]}\n"
+                        "```"
+                    ),
+                    name="task",
+                ),
+            ],
+            user_id="user-2",
+        )
+
+        self.assertEqual(messages[0].role, "delegation")
+        self.assertEqual(messages[0].deliverables[0].artifact_id, artifact_id)
+        self.assertEqual(
+            messages[0].deliverables[0].download_src,
+            f"/deliverables/{artifact_id}?user_id=user-2",
+        )
+
 class ThreadHistoryReaderTests(unittest.IsolatedAsyncioTestCase):
     """确保历史恢复通过已编译状态图重放 DeltaChannel。"""
 

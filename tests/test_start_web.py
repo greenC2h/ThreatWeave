@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 from start_web import (
+    SCHEDULER_ENABLED,
     async_agent_protocol_command,
     build_python_env,
     ensure_port_available,
@@ -70,6 +71,7 @@ class EnsurePortAvailableTests(unittest.TestCase):
             "http://127.0.0.1:18082",
         )
         self.assertEqual(build_python_env()["LOG_COLOR"], "false")
+        self.assertIsInstance(SCHEDULER_ENABLED, bool)
 
     def test_java_backend_command_uses_maven_project_and_configured_port(self) -> None:
         """Java 后端命令必须从迁移后的 Maven 项目启动并传入服务端口。"""

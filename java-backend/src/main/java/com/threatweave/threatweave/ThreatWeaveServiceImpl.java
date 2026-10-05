@@ -51,6 +51,35 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
     }
 
     @Override
+    public Map<String, Object> getDocumentExtraction(long documentId) {
+        // 读取前先确认文档存在，避免空结果与不存在的 document_id 混淆。
+        getDocument(documentId);
+        List<Map<String, Object>> entities = jdbcTemplate.queryForList("""
+            SELECT e.id, e.entity_type, e.canonical_value, e.display_name, e.semantic_role, e.confidence,
+                   p.evidence_quote, p.char_start, p.char_end, p.extractor AS evidence_extractor,
+                   p.confidence AS evidence_confidence
+            FROM threatweave.provenance p
+            JOIN threatweave.entities e ON e.id = p.entity_id
+            WHERE p.document_id = ?
+            ORDER BY e.id, p.id
+            """, documentId);
+        List<Map<String, Object>> relations = jdbcTemplate.queryForList("""
+            SELECT r.id, r.relation_type, r.confidence,
+                   src.entity_type AS src_entity_type, src.canonical_value AS src_canonical_value,
+                   dst.entity_type AS dst_entity_type, dst.canonical_value AS dst_canonical_value,
+                   p.evidence_quote, p.char_start, p.char_end, p.extractor AS evidence_extractor,
+                   p.confidence AS evidence_confidence
+            FROM threatweave.provenance p
+            JOIN threatweave.relations r ON r.id = p.relation_id
+            JOIN threatweave.entities src ON src.id = r.src_entity_id
+            JOIN threatweave.entities dst ON dst.id = r.dst_entity_id
+            WHERE p.document_id = ?
+            ORDER BY r.id, p.id
+            """, documentId);
+        return Map.of("document_id", documentId, "entities", entities, "relations", relations);
+    }
+
+    @Override
     public Map<String, Object> getDocumentByKey(String docKey) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 "SELECT * FROM threatweave.documents WHERE doc_key = ?", docKey);
@@ -102,20 +131,37 @@ public class ThreatWeaveServiceImpl implements ThreatWeaveService {
     }
 
     @Override
-    public Map<String, Object> queryGraph(String query, int limit) {
+    public Map<String, Object> queryGraph(String query, List<Long> documentIds, int limit) {
         String term = query == null ? "" : query.trim();
-        List<Map<String, Object>> entities = jdbcTemplate.queryForList("""
-            SELECT e.* FROM threatweave.entities e WHERE ? = '' OR e.canonical_value ILIKE ? OR e.display_name ILIKE ?
-            ORDER BY e.updated_at DESC LIMIT ?
-            """, term, "%" + term + "%", "%" + term + "%", limit);
-        List<Map<String, Object>> relations = jdbcTemplate.queryForList("""
+        List<Long> scopedDocumentIds = documentIds == null ? List.of() : documentIds.stream()
+            .filter(documentId -> documentId != null && documentId > 0)
+            .distinct()
+            .toList();
+        String documentFilter = scopedDocumentIds.isEmpty()
+            ? ""
+            : " AND EXISTS (SELECT 1 FROM threatweave.provenance p "
+                + "WHERE p.%s = %s.id AND p.document_id IN ("
+                + String.join(", ", java.util.Collections.nCopies(scopedDocumentIds.size(), "?")) + "))";
+
+        String entitySql = """
+            SELECT e.* FROM threatweave.entities e WHERE (? = '' OR e.canonical_value ILIKE ? OR e.display_name ILIKE ?)
+            """ + String.format(documentFilter, "entity_id", "e") + " ORDER BY e.updated_at DESC LIMIT ?";
+        List<Object> entityArguments = new java.util.ArrayList<>(List.of(term, "%" + term + "%", "%" + term + "%"));
+        entityArguments.addAll(scopedDocumentIds);
+        entityArguments.add(limit);
+        List<Map<String, Object>> entities = jdbcTemplate.queryForList(entitySql, entityArguments.toArray());
+
+        String relationSql = """
             SELECT r.*, src.entity_type AS src_entity_type, src.canonical_value AS src_canonical_value,
                    dst.entity_type AS dst_entity_type, dst.canonical_value AS dst_canonical_value
             FROM threatweave.relations r JOIN threatweave.entities src ON src.id = r.src_entity_id
               JOIN threatweave.entities dst ON dst.id = r.dst_entity_id
-            WHERE ? = '' OR src.canonical_value ILIKE ? OR dst.canonical_value ILIKE ?
-            ORDER BY r.updated_at DESC LIMIT ?
-            """, term, "%" + term + "%", "%" + term + "%", limit);
+            WHERE (? = '' OR src.canonical_value ILIKE ? OR dst.canonical_value ILIKE ?)
+            """ + String.format(documentFilter, "relation_id", "r") + " ORDER BY r.updated_at DESC LIMIT ?";
+        List<Object> relationArguments = new java.util.ArrayList<>(List.of(term, "%" + term + "%", "%" + term + "%"));
+        relationArguments.addAll(scopedDocumentIds);
+        relationArguments.add(limit);
+        List<Map<String, Object>> relations = jdbcTemplate.queryForList(relationSql, relationArguments.toArray());
         return Map.of("entities", entities, "relations", relations);
     }
 

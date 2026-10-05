@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { computed, ref } from "vue";
-import { asyncTaskToolStatus } from "../src/utils/chatState.js";
+import { asyncTaskToolStatus, toolStatusLabel } from "../src/utils/chatState.js";
 
 // 执行真实 setup 逻辑，只替换网络与生命周期；不引入 DOM 或额外测试依赖。
 const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8")
@@ -33,6 +33,8 @@ function setup(overrides = {}) {
     window: {
       setTimeout(callback) { timers.set(++timerId, callback); return timerId; },
       clearTimeout(id) { timers.delete(id); },
+      addEventListener() {},
+      removeEventListener() {},
       confirm: () => true,
     },
     ...overrides,
@@ -42,7 +44,7 @@ function setup(overrides = {}) {
     errorMessage, startNewThread, selectSession, streamHandlers, sendMessage,
     resumeInterruptedChat, reloadCurrentSessionMessages, restoreSessionState,
     drainQueuedMessages, startAsyncTaskPolling, lifetimeController,
-    readStorage, toggleSidebar, retryAsyncTask,
+    readStorage, toggleSidebar, retryAsyncTask, refreshCurrentSessionOnFocus,
     isInitializing, isInputLocked, initializeSession, initializationError
   };`)(...Object.values(dependencies));
   app.isInitializing.value = false;
@@ -82,6 +84,21 @@ test("history response cannot overwrite a stream started while fetch was pending
   await sending;
 });
 
+test("focusing the page refreshes a settled current session", async () => {
+  let requests = 0;
+  const app = setup({ getSessionMessages: async () => {
+    requests += 1;
+    return { thread_id: "thread", messages: [{ id: "task", role: "delegation", deliverables: [{ artifact_id: "a".repeat(32), download_src: "/deliverables/a", filename: "article.md" }] }] };
+  } });
+  app.threadId.value = "thread";
+
+  await app.refreshCurrentSessionOnFocus();
+
+  assert.equal(requests, 1);
+  assert.equal(app.messages.value[0].deliverables[0].filename, "article.md");
+  app.unmount();
+});
+
 test("fragmented delegation args accumulate before parsing", () => {
   const app = setup();
   const handlers = app.streamHandlers();
@@ -94,6 +111,36 @@ test("fragmented delegation args accumulate before parsing", () => {
   handlers.onError(new Error("failure"));
   assert.equal(app.messages.value[0].toolStatus, "failed");
   app.unmount();
+});
+
+test("tool result without a legacy status is not shown as waiting", () => {
+  assert.equal(toolStatusLabel(undefined, true), "已完成");
+  assert.equal(toolStatusLabel(undefined, false), "等待结果");
+});
+
+test("synchronous subagent deliverables are immediately available to download", () => {
+  const app = setup();
+  const handlers = app.streamHandlers();
+  handlers.onToolStart({ tool_call_id: "task", tool_name: "task" });
+  handlers.onToolResult({
+    tool_call_id: "task",
+    tool_name: "task",
+    text: "已完成",
+    deliverables: [{ artifact_id: "a".repeat(32), download_src: "/deliverables/a", filename: "article.md" }],
+  });
+
+  assert.equal(app.messages.value[0].deliverables.length, 1);
+  assert.equal(app.messages.value[0].deliverables[0].filename, "article.md");
+  app.unmount();
+});
+
+test("synchronous delegation template renders the deliverable download controls", () => {
+  const template = readFileSync(new URL("../src/components/MessageItem.vue", import.meta.url), "utf8")
+    .split("<template>")[1].split("</template>")[0];
+  const delegationTemplate = template.split("<template v-else-if=\"message.role === 'tool'\">")[0];
+
+  assert.match(delegationTemplate, /v-for="deliverable in deliverables"/);
+  assert.match(delegationTemplate, /下载 \{\{ deliverable\.label \}\}/);
 });
 
 test("interrupt preserves queued messages; failed resume preserves approval", async () => {
@@ -225,6 +272,70 @@ test("completed task keeps polling while delivery waits for a paused parent", as
   assert.equal(historyReads, 1);
   assert.equal(app.timers.size, 0);
   assert.equal(message.deliveryStatus, "delivered");
+  app.unmount();
+});
+
+test("delivered task leaves its artifact controls to the final session message", async () => {
+  const deliverables = [{
+    artifact_id: "a".repeat(32),
+    filename: "graph.html",
+    mime_type: "text/html",
+    download_src: "/deliverables/a",
+  }];
+  const app = setup({
+    getAsyncTaskStatus: async () => ({
+      done: true,
+      status: "success",
+      delivered: true,
+      deliverables,
+    }),
+    getSessionMessages: async () => ({ messages: [] }),
+  });
+  app.threadId.value = "thread";
+  const message = { toolStatus: "calling" };
+  app.startAsyncTaskPolling("task", message);
+  const [id, callback] = [...app.timers.entries()][0];
+  app.timers.delete(id);
+
+  await callback();
+
+  assert.deepEqual(message.deliverables, []);
+  assert.equal(message.visualization, null);
+  assert.equal(message.deliveryStatus, "delivered");
+  app.unmount();
+});
+
+test("restored async result does not copy artifacts onto the task card", async () => {
+  const app = setup({
+    getSessionMessages: async () => ({
+      messages: [
+        {
+          id: "task",
+          role: "delegation",
+          tool_name: "start_async_task",
+          async_task_id: "task-id",
+          tool_status: "done",
+        },
+        {
+          id: "async-task-result:task-id",
+          role: "assistant",
+          async_task_id: "task-id",
+          content: "已生成 1 个交付件。",
+          deliverables: [{
+            artifact_id: "a".repeat(32),
+            filename: "graph.html",
+            mime_type: "text/html",
+            download_src: "/deliverables/a",
+          }],
+        },
+      ],
+    }),
+  });
+
+  await app.selectSession("thread");
+
+  assert.equal(app.messages.value[0].deliverables.length, 0);
+  assert.equal(app.messages.value[1].deliverables.length, 1);
   app.unmount();
 });
 

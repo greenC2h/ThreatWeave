@@ -40,6 +40,10 @@ REPORT_REQUEST_NEGATION_PATTERN = re.compile(
     r"(?:报告|报表|分析报告|markdown)|(?:no|without|不要)\s+\breport",
     re.IGNORECASE,
 )
+GRAPH_REQUEST_PATTERN = re.compile(
+    r"(?:图谱|关系图|网络图|可视化|HTML\s*图|画(?:一张|个)?图)|\bgraph\b",
+    re.IGNORECASE,
+)
 DELIVERABLE_LINE_PATTERN = re.compile(
     r"(?im)^\s*DELIVERABLE\s*:\s*"
     r"(/deliverables/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:md|html|json))\s*\|\s*"
@@ -50,6 +54,12 @@ DELIVERABLE_LINE_PATTERN = re.compile(
 def _get_attr(value: Any, key: str, default: Any = None) -> Any:
     """兼容 LangGraph SDK 返回的字典和对象属性访问。"""
     return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
+
+
+def _normalized_run_status(run: Any) -> str:
+    """统一 Agent Protocol 的终态别名，供最新与历史运行比较。"""
+    status = str(_get_attr(run, "status", "unknown")).lower()
+    return {"failed": "error", "canceled": "cancelled", "timed_out": "timeout"}.get(status, status)
 
 
 def extract_async_task_id(value: Any) -> str | None:
@@ -117,6 +127,22 @@ def _task_requests_report(values: Any) -> bool:
         if REPORT_REQUEST_PATTERN.search(content):
             return True
     return False
+
+
+def _requested_deliverable_mime_types(values: Any) -> set[str]:
+    """从任务原始请求提取明确交付类型，拒绝模型自行附加的文件。"""
+    if not isinstance(values, dict) or not isinstance(values.get("messages"), list):
+        return set()
+    requested: set[str] = set()
+    for message in values["messages"]:
+        if _message_role(message) != "user":
+            continue
+        content = content_to_text(_get_attr(message, "content", ""))
+        if GRAPH_REQUEST_PATTERN.search(content):
+            requested.add("text/html")
+        if not REPORT_REQUEST_NEGATION_PATTERN.search(content) and REPORT_REQUEST_PATTERN.search(content):
+            requested.add("text/markdown")
+    return requested
 
 
 def _extract_error(run: Any, state: Any) -> str | None:
@@ -187,8 +213,7 @@ async def get_async_task_status(
         return AsyncTaskStatusResponse(task_id=task_id, status="pending", done=False)
 
     latest_run = runs[0]
-    status = str(_get_attr(latest_run, "status", "unknown")).lower()
-    status = {"failed": "error", "canceled": "cancelled", "timed_out": "timeout"}.get(status, status)
+    status = _normalized_run_status(latest_run)
     is_terminal = status in TERMINAL_RUN_STATUSES
     if not is_terminal:
         return AsyncTaskStatusResponse(
@@ -206,10 +231,24 @@ async def get_async_task_status(
         content, visualization = _extract_task_output(values)
         report_requested = _task_requests_report(values)
         deliverable_specs = _extract_task_deliverables(values, content)
+        requested_mime_types = _requested_deliverable_mime_types(values)
+        deliverable_specs = [
+            specification for specification in deliverable_specs
+            if specification["mime_type"] in requested_mime_types
+        ]
         content = _sanitize_task_content(content)
     except Exception as exc:
         # run 成功不代表已读到结果；失败必须可重试，不能写入占位成功消息。
         raise HTTPException(status_code=502, detail="无法读取异步任务结果，请稍后重试") from exc
+
+    # 旧版 DeepAgents 暴露过 update_async_task。它会在原线程追加一次运行，更新失败时
+    # 不应覆盖同一线程中已经成功写入且仍可读取的交付件。
+    prior_successful_run = next(
+        (run for run in runs[1:] if _normalized_run_status(run) == "success"), None,
+    )
+    if status != "success" and prior_successful_run is not None and (content or visualization or deliverable_specs):
+        latest_run = prior_successful_run
+        status = "success"
 
     delivered = False
     error = None

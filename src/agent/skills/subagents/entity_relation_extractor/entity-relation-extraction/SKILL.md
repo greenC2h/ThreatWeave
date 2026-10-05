@@ -25,11 +25,34 @@ description: >
 
 1. 先调用 `validate_extraction_evidence`。它返回可写入的候选和拒绝原因；对拒绝项最多修正一次，
    仍不通过则丢弃，不能为了写入而编造出处。
-2. 仅在所有正文块都处理后，根据输入工作流模式选择唯一出口：
+2. 调用校验、预览或写入工具时，必须使用以下平面对象，字段名可使用下列 `camelCase` 写法或等价
+   `snake_case` 写法。不要使用 `name`、`type`、`source`、`target`，也不要嵌套源/目标端点：
+
+   ```json
+   {
+     "entities": [{
+       "entityType": "threat_actor",
+       "canonicalValue": "NightHeron",
+       "semanticRole": "unknown",
+       "evidence": "NightHeron 组织在一次测试活动中使用 NightHeron 恶意软件"
+     }],
+     "relations": [{
+       "srcEntityType": "threat_actor",
+       "srcCanonicalValue": "NightHeron",
+       "dstEntityType": "malware",
+       "dstCanonicalValue": "NightHeron",
+       "relationType": "USES",
+       "evidence": "NightHeron 组织在一次测试活动中使用 NightHeron 恶意软件"
+     }]
+   }
+   ```
+
+   一条关系的四个端点字段和 `relationType` 均为必填项，且端点类型和值必须与同批实体候选一致。
+3. 仅在所有正文块都处理后，根据输入工作流模式选择唯一出口：
    - `PREVIEW`：调用一次 `threat_extraction_preview`，传入输入中的一次性 `access_token`、校验通过的实体和关系。绝不调用 `threat_extraction_write`。
    - `COMMIT` 且输入含 `access_token`：调用一次 `commit_extraction_draft`，不重新抽取或改写草稿。
    - `COMMIT` 且无 `access_token`：调用一次 `threat_extraction_write`，传入校验通过的实体和关系。
-3. 代码规范化明显格式、校验 schema 和精简引文；模型保留实体、关系与语义角色判断责任。
+4. 代码规范化明显格式、校验 schema 和精简引文；模型保留实体、关系与语义角色判断责任。
 
 仅当输入明确要求 `extraction_markdown` 时，才能在完成当前 PREVIEW 或 COMMIT 工作流后调用
 一次 `write_deliverable` 导出抽取结果。交付件不是图谱写入的条件，也不能作为草稿或写入成功的证据。

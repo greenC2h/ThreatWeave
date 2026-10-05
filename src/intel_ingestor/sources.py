@@ -127,6 +127,8 @@ def load_source(source_id: str) -> SourceConfig:
         license=str(data.get("license", "")),
         article_url_pattern=str(data["article_url_pattern"]),
         article_link_attribute=str(html.get("article_link_attribute", "href")),
+        fetch_url_template=data.get("fetch_url_template"),
+        external_id_query_parameter=data.get("external_id_query_parameter"),
         charset=html.get("charset"),
         content_selector=html.get("content_selector"),
         title_selector=html.get("title_selector"),

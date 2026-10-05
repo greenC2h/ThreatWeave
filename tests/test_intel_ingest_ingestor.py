@@ -42,6 +42,8 @@ def make_source(**overrides: object) -> SourceConfig:
 LISTING_URL = "https://www.cert.org.cn/publish/main/11/index.html"
 ARTICLE_A_URL = "https://www.cert.org.cn/publish/main/11/2026/20260601145618109326016/20260601145618109326016_.html"
 ARTICLE_B_URL = "https://www.cert.org.cn/publish/main/11/2026/20260323113411436406469/20260323113411436406469_.html"
+HILLSTONE_URL = "https://ti.hillstonenet.com.cn/hotthreat/detail?id=4715"
+HILLSTONE_API_URL = "https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/detail?id=4715"
 LISTING_HTML = (
     '<li><span>[2026-06-01]</span>'
     '<a href="javascript:void(0)" onclick=window.open("/publish/main/11/2026/20260601145618109326016/20260601145618109326016_.html")>文章A</a></li>'
@@ -56,6 +58,20 @@ ARTICLE_HTML = (
     '<div class="artil_art">　时间：2026-06-01</div>'
     '<div class="artil_content" ID="Content"><p>&nbsp;&nbsp;正文第一段。</p><p>重复段落。</p><p>重复段落。</p></div>'
     '</body></html>'
+)
+HILLSTONE_JSON = (
+    '{"code":200,"message":"OK","result":{'
+    '"id":4715,'
+    '"name":"攻击者克隆合法网站静默触发 Chrome 与 Windows 零日漏洞利用",'
+    '"contentSummary":"利用仿冒网站串联浏览器与系统漏洞。",'
+    '"contentDetail":"1. 发送定向钓鱼邮件。\\n2. 下载 CLEANGULP。",'
+    '"affectedSystem":"Windows、Google Chrome",'
+    '"threatTags":[{"threatTagValue":"恶意软件","threatTagSeverity":3}],'
+    '"publishTime":1790006400000,'
+    '"associatedIp":"96.9.125.52",'
+    '"associatedDomain":"example.test",'
+    '"protectionAdvice":"及时安装安全更新。",'
+    '"eventScope":"国外"}}'
 )
 
 
@@ -79,6 +95,9 @@ class KeyDerivationTest(unittest.TestCase):
         key = derive_doc_key("src", "ext1", "https://a/b/c_.html")
         self.assertEqual(key, derive_doc_key("src", "ext1", "https://a/b/c_.html"))
         self.assertNotEqual(key, derive_doc_key("src", "ext2", "https://a/b/c_.html"))
+
+    def test_external_id_can_come_from_query_parameter(self) -> None:
+        self.assertEqual(derive_external_id(HILLSTONE_URL, "id"), "4715")
 
 
 class RoutingFetcher:
@@ -117,6 +136,31 @@ class CollectArticleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outcome.status, "failed")
         self.assertIsNone(outcome.document)
+
+    async def test_collect_article_parses_hillstone_json_detail(self) -> None:
+        source = make_source(
+            source_id="hillstone_hot_threat",
+            display_name="山石云瞻热点威胁",
+            parser_type="hillstone_hot_threat_json",
+            article_url_pattern=r"https://ti\.hillstonenet\.com\.cn/hotthreat/detail\?id=\d+",
+            fetch_url_template="https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/detail?id={id}",
+            external_id_query_parameter="id",
+        )
+        fetcher = RoutingFetcher({
+            HILLSTONE_API_URL: FetchResult(
+                "ok", HILLSTONE_API_URL, status_code=200, content=HILLSTONE_JSON.encode("utf-8")
+            ),
+        })
+
+        outcome = await collect_article(ArticleRef(HILLSTONE_URL, None, None), source, fetcher)
+
+        self.assertEqual(outcome.status, "ok")
+        assert outcome.document is not None
+        self.assertEqual(outcome.document.external_id, "4715")
+        self.assertEqual(outcome.document.title, "攻击者克隆合法网站静默触发 Chrome 与 Windows 零日漏洞利用")
+        self.assertIn("## 内容摘要", outcome.document.preliminary_content)
+        self.assertIn("发送定向钓鱼邮件", outcome.document.preliminary_content)
+        self.assertIn("## 防护建议", outcome.document.preliminary_content)
 
 
 class CollectSourceTest(unittest.IsolatedAsyncioTestCase):

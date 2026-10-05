@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import PurePosixPath
@@ -24,6 +25,33 @@ _MAX_DELIVERABLE_BYTES = 4 * 1024 * 1024
 _DELIVERABLE_NAMESPACE_PREFIX = ("sandbox_deliverables",)
 
 
+async def write_deliverable_content(
+    sandbox_backend: SandboxBackendProxy,
+    *,
+    filename: str,
+    content: str,
+    mime_type: str,
+    label: str,
+) -> dict[str, str]:
+    """写入受控交付件并返回可登记的声明，不暴露沙箱路径给调用方。"""
+    specification = normalize_deliverable_spec({
+        # Agent 会根据用户语言生成自然语言文件名。文件系统路径仍必须保持受控的
+        # ASCII 形式，因此在工具边界稳定地归一化，不能让展示性命名失败中断交付。
+        "filename": _safe_deliverable_filename(filename, mime_type),
+        "content": content,
+        "mime_type": mime_type,
+        "label": label,
+    })
+    response = (
+        await sandbox_backend.aupload_files([
+            (specification["path"], content.encode("utf-8")),
+        ])
+    )[0]
+    if response.error:
+        raise RuntimeError("无法写入用户交付件")
+    return specification
+
+
 def create_write_deliverable_tool(sandbox_backend: SandboxBackendProxy) -> BaseTool:
     """创建绑定当前沙箱的唯一交付件写入工具。"""
 
@@ -39,22 +67,30 @@ def create_write_deliverable_tool(sandbox_backend: SandboxBackendProxy) -> BaseT
         文件只能写入受控的 `/deliverables/` 根目录。工具返回结构化声明，调用方无需
         自行拼接下载 URL、artifact ID 或用户身份。
         """
-        specification = normalize_deliverable_spec({
-            "filename": filename,
-            "content": content,
-            "mime_type": mime_type,
-            "label": label,
-        })
-        response = (
-            await sandbox_backend.aupload_files([
-                (specification["path"], content.encode("utf-8")),
-            ])
-        )[0]
-        if response.error:
-            raise RuntimeError("无法写入用户交付件")
+        specification = await write_deliverable_content(
+            sandbox_backend,
+            filename=filename,
+            content=content,
+            mime_type=mime_type,
+            label=label,
+        )
         return json.dumps({"type": "deliverable_spec", **specification}, ensure_ascii=False)
 
     return write_deliverable
+
+
+def _safe_deliverable_filename(filename: str, mime_type: str) -> str:
+    """把非 ASCII 展示名称映射为安全路径名，同时保留危险路径输入的拒绝。"""
+    candidate = str(filename).strip()
+    expected_extension = _DELIVERABLE_EXTENSION_BY_MIME.get(mime_type)
+    if expected_extension is None or "/" in candidate or "\\" in candidate:
+        return candidate
+    if _DELIVERABLE_FILENAME_PATTERN.fullmatch(candidate) and candidate.endswith(expected_extension):
+        return candidate
+    if candidate.endswith(expected_extension):
+        digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()[:16]
+        return f"deliverable-{digest}{expected_extension}"
+    return candidate
 
 
 def normalize_deliverable_spec(value: dict[str, Any]) -> dict[str, str]:

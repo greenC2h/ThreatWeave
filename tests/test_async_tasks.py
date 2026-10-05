@@ -127,6 +127,99 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.result, "图表已生成。")
         self.assertEqual(publish.await_args.kwargs["deliverables"], [])
 
+    async def test_failed_legacy_update_keeps_prior_successful_deliverables(self) -> None:
+        """旧 update_async_task 追加失败运行时，不能覆盖同线程已成功的图表。"""
+        html_spec = {
+            "type": "deliverable_spec",
+            "path": "/deliverables/threat-graph.html",
+            "filename": "threat-graph.html",
+            "mime_type": "text/html",
+            "label": "打开关系图",
+        }
+        client = SimpleNamespace(
+            runs=SimpleNamespace(list=AsyncMock(return_value=[
+                {"status": "error", "run_id": "update-failed"},
+                {"status": "success", "run_id": "original-success"},
+            ])),
+            threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
+                "messages": [
+                    {"role": "human", "content": "只生成 HTML 图"},
+                    {"type": "tool", "name": "write_deliverable", "content": json.dumps(html_spec)},
+                    {"role": "assistant", "content": "图表已生成。"},
+                ],
+            }))),
+        )
+        with (
+            patch("api.async_tasks.get_client", return_value=client),
+            patch(
+                "api.async_tasks.agent_loader.register_sandbox_deliverables",
+                new=AsyncMock(return_value=[{
+                    "artifact_id": "d" * 32,
+                    "filename": "threat-graph.html",
+                    "mime_type": "text/html",
+                    "label": "打开关系图",
+                }]),
+            ),
+            patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)),
+        ):
+            response = await get_async_task_status("task-1", user_id="u1")
+
+        self.assertEqual(response.status, "success")
+        self.assertEqual(response.run_id, "original-success")
+        self.assertEqual([item.filename for item in response.deliverables], ["threat-graph.html"])
+
+    async def test_chart_only_task_discards_unrequested_markdown_deliverable(self) -> None:
+        """模型误写报告时，明确的仅图请求也不能向用户登记该报告。"""
+        markdown_spec = {
+            "type": "deliverable_spec",
+            "path": "/deliverables/unrequested-report.md",
+            "filename": "unrequested-report.md",
+            "mime_type": "text/markdown",
+            "label": "不应交付的报告",
+        }
+        html_spec = {
+            "type": "deliverable_spec",
+            "path": "/deliverables/requested-graph.html",
+            "filename": "requested-graph.html",
+            "mime_type": "text/html",
+            "label": "请求的图谱",
+        }
+        client = SimpleNamespace(
+            runs=SimpleNamespace(list=AsyncMock(return_value=[{"status": "success"}])),
+            threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
+                "messages": [
+                    {"role": "human", "content": "只生成 HTML 图，不要 Markdown 报告"},
+                    {"type": "tool", "name": "write_deliverable", "content": json.dumps(markdown_spec)},
+                    {"type": "tool", "name": "write_deliverable", "content": json.dumps(html_spec)},
+                    {"role": "assistant", "content": "图谱已生成。"},
+                ],
+            }))),
+        )
+
+        async def register(_task_id, specifications):
+            return [{
+                "artifact_id": "c" * 32,
+                "filename": specification["filename"],
+                "mime_type": specification["mime_type"],
+                "label": specification["label"],
+            } for specification in specifications]
+
+        with (
+            patch("api.async_tasks.get_client", return_value=client),
+            patch(
+                "api.async_tasks.agent_loader.register_sandbox_deliverables",
+                new=AsyncMock(side_effect=register),
+            ) as register_deliverables,
+            patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)),
+        ):
+            response = await get_async_task_status("task-1", user_id="u1")
+
+        self.assertEqual([item.filename for item in response.deliverables], ["requested-graph.html"])
+        self.assertEqual(
+            [item["filename"] for item in register_deliverables.await_args.args[1]],
+            ["requested-graph.html"],
+        )
+
     async def test_report_request_without_report_path_remains_an_error(self) -> None:
         """明确要求报告但子 Agent 未写入文件时，不能伪装成成功。"""
         client = SimpleNamespace(

@@ -24,6 +24,10 @@ class SourceConfig:
       标题与发布时间的简易选择器（形如 ``div.artil_content`` / ``h2.artil_tit``）。
     - ``skip_selectors``：正文区域中明确不是正文的结构容器选择器。广告、推荐和
       其他业务无关内容仍由 Agent 在深度格式化阶段判断。
+    - ``fetch_url_template``：详情页由前端单页应用渲染时，按文章 URL 查询参数
+      生成实际公开详情接口地址。
+    - ``external_id_query_parameter``：外部文章标识位于查询参数时使用，避免同一路径
+      的多篇文章共享同一个 doc_key。
     """
 
     source_id: str
@@ -35,6 +39,8 @@ class SourceConfig:
     license: str
     article_url_pattern: str
     article_link_attribute: str = "href"
+    fetch_url_template: str | None = None
+    external_id_query_parameter: str | None = None
     charset: str | None = None
     content_selector: str | None = None
     title_selector: str | None = None

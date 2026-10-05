@@ -192,6 +192,8 @@ flowchart TD
 
 启动器只验证服务入口可响应，不代表模型、数据库、真实沙箱或业务请求已经成功。MCP 的普通 GET 可能返回 406，只要端点可处理请求即视为启动探测通过。
 
+定时采集器是否由启动器托管由 `THREATWEAVE_SCHEDULER_ENABLED` 控制；当前本地 `.env` 配置为 `false`，因此启动器暂不创建调度器进程。需要恢复定时采集时将其改为 `true` 后重启 `start_web.py`。
+
 OpenSandbox 必须独立启动并可被项目访问。缺少 `OPEN_SANDBOX_API_KEY` 时，页面、认证和部分历史接口仍可启动，但第一次需要沙箱的 Agent 请求会失败。
 
 ### 2.3 停止和运行产物
@@ -340,14 +342,17 @@ threat_analyst_async
 
 ### 6.1 来源配置
 
-第一阶段来源配置为：
+当前已登记来源配置为：
 
 ```text
 src/agent/skills/subagents/intel_ingestor/
   intel-ingestion/sources/cncert_cc.yaml
+  intel-ingestion/sources/hillstone_hot_threat.yaml
 ```
 
 `src/intel_ingestor/sources.py` 负责读取和校验来源配置。来源至少需要 `source_id`、入口 URL、启用状态、解析器类型、最低间隔和文章 URL 模式。来源配置是代码可校验的结构化文件，不能在 Agent 运行中临时扩展。
+
+Hillstone 热点威胁详情页是前端单页应用，文章 URL 通过来源配置中的 `fetch_url_template` 映射到公开 JSON 详情接口；`external_id_query_parameter` 用于从 `detail?id=...` URL 生成稳定的外部文章标识。
 
 ### 6.2 代码侧采集
 
@@ -356,10 +361,10 @@ src/agent/skills/subagents/intel_ingestor/
 1. 校验来源是否登记且启用。
 2. 抓取来源列表页。
 3. 从 `href` 或 `onclick` 发现符合模式的文章 URL。
-4. 逐篇抓取文章页。
+4. 逐篇抓取文章页或来源声明的详情接口。
 5. 修复字符编码，提取配置指定的正文容器。
 6. 清除脚本、样式和明显页面容器噪声，转为基础 Markdown。
-7. 根据来源、外部 ID 和 URL 生成稳定 `doc_key`。
+7. 根据来源、路径或查询参数外部 ID 和 URL 生成稳定 `doc_key`。
 8. 生成 `preliminary_content`，交给 A 做深度格式化。
 
 这一步不写数据库，不负责判断广告、恶意性、IOC 或关系语义，也不把初步清洗结果当成最终正文。
@@ -742,3 +747,49 @@ flowchart TD
 ```
 
 Store、Checkpointer、用户/系统沙箱和 ThreatWeave 业务数据库解决不同问题：Store 保存索引和长期状态，Checkpointer 保存会话执行状态，沙箱保存 Agent 文件，Java/PostgreSQL 保存威胁情报业务事实。它们不能互相替代。
+
+## 13. 真实链路验证与已知限制
+
+本节记录当前代码的实际验证结果和仍待处理的限制，不替代
+[`THREATWEAVE_CONFIRMED_DECISIONS.md`](THREATWEAVE_CONFIRMED_DECISIONS.md) 中的业务决策。
+
+### 13.1 已完成的真实验证
+
+2026-10-04 对空的 `threatweave` 和 `workflow` 测试数据执行了一次真实用户请求。测试文章为 CNCERT/CC
+公开威胁预警《[关于新型 P2P 僵尸网络 PBot 的分析报告](https://www.cert.org.cn/publish/main/11/2021/20210628133948926376206/20210628133948926376206_.html)》。验证不是通过 SQL 预置文档、实体或关系完成，而是经过以下正式路径：
+
+```text
+用户会话 -> 主 Agent -> intelligence_workflow_orchestrator
+-> IntelligenceWorkflow(ingest_full) -> 采集器 -> A 格式化并写 documents
+-> B 抽取并调用 threat_extraction_write -> Java CRUD -> PostgreSQL
+```
+
+验证结果如下：
+
+| 验收项 | 结果 |
+| --- | --- |
+| 已批准来源 URL 的抓取 | 成功；`PageFetcher` 使用浏览器请求头后获得 HTTP 200。 |
+| A 深度格式化与规范文档写入 | 成功；生成一篇 `threatweave.documents` 记录。 |
+| 工作流状态记录 | 成功；对应 `workflow.document_processing` 为 `formatting=completed`、`extraction=completed`。 |
+| B 实体与出处写入 | 成功；写入 29 个实体及 29 条 provenance。 |
+| B 关系写入 | 未通过；该次真实运行写入 0 条关系，见下一节。 |
+
+这说明 A 到 B 的调用、受控 Java 写入、状态迁移和实体出处持久化均已走通；不能把直接向
+`threatweave` 表插入测试数据当作端到端验证，因为那会绕过 A/B 和 `workflow.document_processing`。
+
+### 13.2 当前未解决的问题
+
+1. **B 在关系丰富的真实文章中仍可能产出零关系。** PBot 正文明确包含“PBot 使用自定义 P2P 协议”、传播方式、下载基础设施等关系性描述，但当前真实运行只写入实体与出处，没有写入 `relations`。需要在 B 的实际工具调用记录中确认模型是否提交了 `relations`，再区分是候选生成缺失、`validate_extraction_evidence` 拒绝，还是 Java 写入契约处理错误。修复后应以同一文章重跑，并验收关系与 relation provenance 均大于 0。
+2. **HTML 图生成依赖外部 Charts MCP，尚未完成有非空图谱数据时的端到端验收。** C 被刻意限制为只能调用 `generate_network_graph_html`，该工具只转发到 `MODELSCOPE_CHARTS_MCP_URL`，不可用、返回非 HTML 或库中没有实体关系时均不得本地回退。必须先解决关系写入，再验证 Charts MCP 返回的 HTML 能否登记为可预览、可下载的交付件。
+3. **交付件的会话内展示仍需回归测试。** A/B/C 的文件必须由 `write_deliverable` 产生并由后端登记；前端应在同一条任务结果中展示可用的预览/下载入口，而不是让模型暴露沙箱文件名、artifact ID 或要求用户再发送一次“下载”。需要分别复测格式化 Markdown、抽取 Markdown 和 C 的 HTML 图三种路径，包含刷新会话后的权限校验。
+4. **定期调度的真实生产验证未完成。** 当前已验证用户同步调用路径；调度器使用相同 `IntelligenceWorkflow`，但仍应在启用 `THREATWEAVE_SCHEDULER_ENABLED=true` 的独立测试环境中验证最小间隔、`system-scheduler` 专用沙箱、失败重试和重复文章幂等性。
+
+### 13.3 后续排障建议
+
+后续维护者应先保留一次失败或零关系运行的 B 工具轨迹，并按以下顺序检查：
+
+1. `threat_document_get` 返回的分块正文是否包含用于关系判断的原句；
+2. `validate_extraction_evidence` 输入和返回中的 `relations`、`rejected` 字段；
+3. `threat_extraction_write` 发送给 Java 的 `relations` 数量及 Java 响应；
+4. `threatweave.relations` 和 relation 对应的 `threatweave.provenance` 是否在同一事务后存在；
+5. 修复后清理该篇测试文档的处理状态，使用 `force_refresh=true` 重新走正式工作流，而非手工补写关系。

@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
-from urllib.parse import urljoin, urlparse
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from intel_ingestor.cleaner import decode_html, detect_charset_meta, prepare_article_html
 from intel_ingestor.fetcher import PageFetcher
@@ -101,14 +103,83 @@ def discover_article_refs(listing_html: str | bytes, source: SourceConfig) -> li
     return refs
 
 
-def derive_external_id(url: str) -> str | None:
-    """从文章 URL 导出稳定的外部文章标识（取末段路径，去扩展名与尾部下划线）。"""
+def derive_external_id(url: str, query_parameter: str | None = None) -> str | None:
+    """从文章 URL 导出稳定的外部文章标识，支持路径或查询参数来源。"""
+    if query_parameter:
+        value = parse_qs(urlparse(url).query).get(query_parameter, [None])[0]
+        if value:
+            return value
     path = urlparse(url).path.rstrip("/")
     if not path:
         return None
     segment = path.rsplit("/", 1)[-1]
     segment = re.sub(r"\.html?$", "", segment, flags=re.IGNORECASE).rstrip("_")
     return segment or None
+
+
+def _resolve_fetch_url(url: str, source: SourceConfig) -> str:
+    """按来源配置把文章页 URL 转换为实际详情接口 URL。"""
+    if not source.fetch_url_template:
+        return url
+    query = {key: values[0] for key, values in parse_qs(urlparse(url).query).items() if values}
+    try:
+        return source.fetch_url_template.format(**query)
+    except KeyError as exc:
+        raise ValueError(f"来源 {source.source_id} 的详情接口缺少 URL 参数: {exc.args[0]}") from exc
+
+
+def _strip_markup(value: object) -> str:
+    """把来源 JSON 中的少量 HTML 字段转换成纯文本。"""
+    return re.sub(r"<[^>]+>", " ", str(value or "")).strip()
+
+
+def _prepare_hillstone_json(content: bytes) -> tuple[str, str | None, str]:
+    """把 Hillstone 详情接口 JSON 转为保留字段语义的 Markdown 草稿。"""
+    payload = json.loads(content.decode("utf-8"))
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        raise ValueError("Hillstone 详情接口未返回 result 对象")
+
+    title = str(result.get("name") or "未命名")
+    sections = [f"# {title}"]
+    field_sections = (
+        ("内容摘要", result.get("contentSummary")),
+        ("详细内容", result.get("contentDetail")),
+        ("受影响系统", result.get("affectedSystem")),
+    )
+    for heading, value in field_sections:
+        if value:
+            sections.append(f"## {heading}\n\n{str(value).strip()}")
+
+    tags = result.get("threatTags") or []
+    tag_values = [str(item.get("threatTagValue")) for item in tags if isinstance(item, dict) and item.get("threatTagValue")]
+    if tag_values:
+        sections.append("## 威胁标签\n\n" + "\n".join(f"- {value}" for value in tag_values))
+
+    ioc_fields = (
+        ("关联 IP", result.get("associatedIp")),
+        ("关联域名", result.get("associatedDomain")),
+        ("关联文件", result.get("associatedFile")),
+    )
+    for heading, value in ioc_fields:
+        if value:
+            sections.append(f"## {heading}\n\n{str(value).strip()}")
+
+    references = _strip_markup(result.get("references"))
+    if references:
+        sections.append(f"## 参考链接\n\n{references}")
+    advice = str(result.get("protectionAdvice") or "").strip()
+    if advice:
+        sections.append(f"## 防护建议\n\n{advice}")
+    scope = str(result.get("eventScope") or "").strip()
+    if scope:
+        sections.append(f"## 事件范围\n\n{scope}")
+
+    published_at = None
+    publish_time = result.get("publishTime")
+    if isinstance(publish_time, (int, float)):
+        published_at = datetime.fromtimestamp(publish_time / 1000, tz=timezone.utc).date().isoformat()
+    return title, published_at, "\n\n".join(sections)
 
 
 def derive_doc_key(source_id: str, external_id: str | None, url: str) -> str:
@@ -127,18 +198,28 @@ async def collect_article(
     fetcher: PageFetcher,
 ) -> CollectionOutcome:
     """抓取一篇文章并生成待 Agent 深度格式化的草稿。"""
-    fetched = await fetcher.fetch(ref.url)
+    try:
+        fetch_url = _resolve_fetch_url(ref.url, source)
+    except ValueError as exc:
+        return CollectionOutcome(ref.url, "failed", reason=f"详情接口地址无效: {exc}")
+    fetched = await fetcher.fetch(fetch_url)
     if fetched.status != "ok":
         return CollectionOutcome(ref.url, "failed", reason=f"抓取失败: {fetched.status} ({fetched.error})")
 
-    title, published_at, preliminary_content = prepare_article_html(
-        fetched.content,
-        charset=source.charset,
-        content_selector=source.content_selector,
-        title_selector=source.title_selector,
-        date_selector=source.date_selector,
-        skip_selectors=source.skip_selectors,
-    )
+    try:
+        if source.parser_type == "hillstone_hot_threat_json":
+            title, published_at, preliminary_content = _prepare_hillstone_json(fetched.content)
+        else:
+            title, published_at, preliminary_content = prepare_article_html(
+                fetched.content,
+                charset=source.charset,
+                content_selector=source.content_selector,
+                title_selector=source.title_selector,
+                date_selector=source.date_selector,
+                skip_selectors=source.skip_selectors,
+            )
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        return CollectionOutcome(ref.url, "failed", reason=f"正文解析失败: {exc}")
     # 列表页已提供的标题/日期可靠时优先采用，否则用正文页解析结果。
     title = title or ref.title or "未命名"
     published_at = published_at or ref.published_at
@@ -146,7 +227,7 @@ async def collect_article(
     if not preliminary_content or preliminary_content.strip() == "":
         return CollectionOutcome(ref.url, "skipped", reason="初步格式化后正文为空")
 
-    external_id = derive_external_id(ref.url)
+    external_id = derive_external_id(ref.url, source.external_id_query_parameter)
     doc_key = derive_doc_key(source.source_id, external_id, ref.url)
     document = CollectedDocument(
         doc_key=doc_key,

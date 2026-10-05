@@ -26,6 +26,15 @@ export function asyncTaskToolStatus(status) {
   return status.status === "success" && !status.error ? "done" : "failed";
 }
 
+/** 工具已携带结果时，旧协议缺失状态也不能误显示为等待。 */
+export function toolStatusLabel(status, hasResult = false) {
+  const labels = {
+    calling: "正在处理", done: "已完成", failed: "执行失败", pending: "等待处理",
+    interrupted: "等待确认", cancelled: "已取消", timeout: "已超时",
+  };
+  return labels[status] || (hasResult ? "已完成" : "等待结果");
+}
+
 export function approvalDecisions(actions, type) {
   return { decisions: (actions || []).map(() => ({ type })) };
 }

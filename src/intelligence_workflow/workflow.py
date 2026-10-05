@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -16,16 +17,19 @@ from intelligence_workflow.schema import (
     IntelligenceWorkflowMode,
     IntelligenceWorkflowRequest,
     IntelligenceWorkflowResult,
+    RequestedDeliverable,
     WorkflowDeliverable,
     WorkflowDocumentResult,
 )
 from intel_ingestor.ingestor import collect_source
 from intel_ingestor.orchestrator import format_batch_instruction, split_document_batches
 from intel_ingestor.schema import CollectedDocument
-from services.deliverables import DeliverableRegistry, extract_deliverable_specs
+from services.deliverables import DeliverableRegistry
 
 
 AgentRunner = Callable[[str], Awaitable[object]]
+DeliverableWriter = Callable[..., Awaitable[dict[str, str]]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,7 @@ class WorkflowAgents:
     preview_extractor: AgentRunner
     commit_extractor: AgentRunner
     draft_commit_extractor: AgentRunner
+    deliverable_writer: DeliverableWriter | None = None
 
 
 class IntelligenceWorkflow:
@@ -116,6 +121,10 @@ class IntelligenceWorkflow:
                     result.documents.append(WorkflowDocumentResult(
                         doc_key=document.doc_key,
                         document_id=record.document_id,
+                        title=(
+                            (await self._document_gateway.get_by_id(record.document_id)).title
+                            if record.document_id else document.title
+                        ),
                         action=(
                             "skipped_in_progress"
                             if record.formatting_status.value == "running"
@@ -135,11 +144,8 @@ class IntelligenceWorkflow:
                         batch_number,
                         runnable,
                         grants,
-                        request.requested_deliverables,
+                        [],
                     )
-                )
-                await self._register_agent_deliverables(
-                    request, workflow_id, result, agent_result,
                 )
             except Exception as exc:
                 for document in runnable:
@@ -177,8 +183,11 @@ class IntelligenceWorkflow:
                 result.documents.append(WorkflowDocumentResult(
                     doc_key=document.doc_key,
                     document_id=canonical.document_id,
+                    title=canonical.title,
                     action="formatted",
                 ))
+                if RequestedDeliverable.FORMATTED_MARKDOWN in request.requested_deliverables:
+                    await self._export_formatted_markdown(request, workflow_id, result, canonical)
         if request.mode is IntelligenceWorkflowMode.FORMAT_ONLY:
             return result
         return await self._extract_documents(request, workflow_id, formatted, prior=result)
@@ -192,9 +201,62 @@ class IntelligenceWorkflow:
         """在已有规范文档上执行仅抽取或明确入库，不重复运行 A。"""
         result = IntelligenceWorkflowResult(workflow_id=workflow_id, mode=request.mode)
         if request.mode is IntelligenceWorkflowMode.FORMAT_ONLY:
-            result.failures.append("已存在规范文档不能再次执行格式化；请指定来源或文章 URL")
+            if RequestedDeliverable.FORMATTED_MARKDOWN not in request.requested_deliverables:
+                result.documents.extend(
+                    WorkflowDocumentResult(
+                        doc_key=document.doc_key,
+                        document_id=document.document_id,
+                        title=document.title,
+                        action="skipped_already_formatted",
+                    )
+                    for document in documents
+                )
+                return result
+            for document in documents:
+                try:
+                    await self._export_formatted_markdown(request, workflow_id, result, document)
+                except Exception:
+                    logger.exception("导出格式化原文失败：document_id=%s", document.document_id)
+                    result.failures.append(f"格式化原文导出失败：文档 {document.document_id}")
             return result
         return await self._extract_documents(request, workflow_id, documents, prior=result)
+
+    async def _export_formatted_markdown(
+        self,
+        request: IntelligenceWorkflowRequest,
+        workflow_id: str,
+        result: IntelligenceWorkflowResult,
+        document: CanonicalDocument,
+    ) -> None:
+        """将已确认的 Java 正文直接写为 Markdown，不经过 A 的模型输出。"""
+        content = "\n".join([
+            "# 清洗后威胁情报",
+            "",
+            f"- 文档 ID: {document.document_id}",
+            f"- 来源: {document.source_name}",
+            f"- 文章标识: {document.external_id or '无'}",
+            f"- URL: {document.url or '无'}",
+            "",
+            "## 正文",
+            "",
+            document.content.rstrip(),
+            "",
+        ])
+        await self._write_registered_deliverable(
+            request,
+            workflow_id,
+            result,
+            filename=f"document-{document.document_id}-formatted.md",
+            content=content,
+            mime_type="text/markdown",
+            label=f"文档 {document.document_id} 清洗后原文",
+        )
+        result.documents.append(WorkflowDocumentResult(
+            doc_key=document.doc_key,
+            document_id=document.document_id,
+            title=document.title,
+            action="exported_formatted_markdown",
+        ))
 
     async def _extract_documents(
         self,
@@ -226,9 +288,15 @@ class IntelligenceWorkflow:
                     and record.extraction_status is ExtractionStatus.COMPLETED
                     and record.extracted_content_sha256 == document.content_sha256
                 ):
+                    if RequestedDeliverable.EXTRACTION_MARKDOWN in request.requested_deliverables:
+                        await self._export_extraction_markdown(
+                            request, workflow_id, result, document,
+                        )
+                        continue
                     result.documents.append(WorkflowDocumentResult(
                         doc_key=document.doc_key,
                         document_id=document.document_id,
+                        title=document.title,
                         action="skipped_already_extracted",
                     ))
                     continue
@@ -242,6 +310,7 @@ class IntelligenceWorkflow:
                         result.documents.append(WorkflowDocumentResult(
                             doc_key=document.doc_key,
                             document_id=document.document_id,
+                            title=document.title,
                             action=(
                                 "skipped_in_progress"
                                 if current.extraction_status is ExtractionStatus.RUNNING
@@ -266,7 +335,7 @@ class IntelligenceWorkflow:
                     document=document,
                     extraction_mode=extraction_mode,
                     access_token=grant.token if grant else None,
-                    requested_deliverables=request.requested_deliverables,
+                    requested_deliverables=[],
                 ))
                 expected_tool = (
                     "threat_extraction_preview"
@@ -275,18 +344,20 @@ class IntelligenceWorkflow:
                 )
                 if not self._has_successful_tool_result(agent_result, expected_tool):
                     raise RuntimeError(f"B 未调用要求的受控出口: {expected_tool}")
-                await self._register_agent_deliverables(
-                    request, workflow_id, result, agent_result,
-                )
                 if extraction_mode == "COMMIT":
                     await self._repository.mark_extraction_completed(
                         document.doc_key,
                         document.content_sha256,
                         workflow_id,
                     )
+                    if RequestedDeliverable.EXTRACTION_MARKDOWN in request.requested_deliverables:
+                        await self._export_extraction_markdown(
+                            request, workflow_id, result, document,
+                        )
                 result.documents.append(WorkflowDocumentResult(
                     doc_key=document.doc_key,
                     document_id=document.document_id,
+                    title=document.title,
                     action="extraction_previewed" if extraction_mode == "PREVIEW" else "extracted",
                 ))
             except Exception as exc:
@@ -302,6 +373,92 @@ class IntelligenceWorkflow:
                         pass
                 result.failures.append(f"实体关系抽取失败：{document.doc_key}")
         return result
+
+    async def _export_extraction_markdown(
+        self,
+        request: IntelligenceWorkflowRequest,
+        workflow_id: str,
+        result: IntelligenceWorkflowResult,
+        document: CanonicalDocument,
+    ) -> None:
+        """将 Java 中已确认的实体关系写为 Markdown，不重新运行 B。"""
+        try:
+            extraction = await self._document_gateway.get_extraction(document.document_id)
+            content = self._render_extraction_markdown(document, extraction)
+            await self._write_registered_deliverable(
+                request,
+                workflow_id,
+                result,
+                filename=f"document-{document.document_id}-extraction.md",
+                content=content,
+                mime_type="text/markdown",
+                label=f"文档 {document.document_id} 实体关系抽取结果",
+            )
+            result.documents.append(WorkflowDocumentResult(
+                doc_key=document.doc_key,
+                document_id=document.document_id,
+                title=document.title,
+                action="exported_extraction_markdown",
+            ))
+        except Exception:
+            logger.exception("导出抽取结果失败：document_id=%s", document.document_id)
+            result.failures.append(f"抽取结果导出失败：文档 {document.document_id}")
+
+    @staticmethod
+    def _render_extraction_markdown(
+        document: CanonicalDocument,
+        extraction: dict[str, Any],
+    ) -> str:
+        """以稳定 JSON 表达实体和关系，完整保留 Java 返回的证据字段。"""
+        entities = extraction.get("entities", [])
+        relations = extraction.get("relations", [])
+        if not isinstance(entities, list) or not isinstance(relations, list):
+            raise ValueError("ThreatWeave 抽取结果缺少实体或关系列表")
+        return "\n".join([
+            f"# 文档 {document.document_id} 实体关系抽取结果",
+            "",
+            f"- 来源: {document.source_name}",
+            f"- URL: {document.url or '无'}",
+            f"- 实体数: {len(entities)}",
+            f"- 关系数: {len(relations)}",
+            "",
+            "## 实体",
+            "",
+            "```json",
+            json.dumps(entities, ensure_ascii=False, indent=2),
+            "```",
+            "",
+            "## 关系",
+            "",
+            "```json",
+            json.dumps(relations, ensure_ascii=False, indent=2),
+            "```",
+            "",
+        ])
+
+    async def _write_registered_deliverable(
+        self,
+        request: IntelligenceWorkflowRequest,
+        workflow_id: str,
+        result: IntelligenceWorkflowResult,
+        **kwargs: str,
+    ) -> None:
+        """写入用户沙箱并立即登记，保证 API 可返回可下载的 artifact。"""
+        if request.actor_id == "system-scheduler":
+            return
+        if self._agents.deliverable_writer is None or self._deliverable_registry is None:
+            raise RuntimeError("交付件写入器未配置")
+        specification = await self._agents.deliverable_writer(**kwargs)
+        registered = await self._deliverable_registry.register(
+            user_id=request.actor_id,
+            delivery_id=workflow_id,
+            specifications=[specification],
+        )
+        if len(registered) != 1:
+            raise RuntimeError("交付件登记失败")
+        result.deliverables.append(WorkflowDeliverable.model_validate({
+            key: value for key, value in registered[0].items() if key != "type"
+        }))
 
     async def _pending_documents(self, source_id: str | None) -> list[CanonicalDocument]:
         """读取已格式化但尚未为当前正文完成抽取的规范文档。"""
@@ -329,6 +486,8 @@ class IntelligenceWorkflow:
             WorkflowDocumentResult(
                 doc_key=record.doc_key,
                 document_id=record.document_id,
+                title=(await self._document_gateway.get_by_id(record.document_id)).title
+                if record.document_id else None,
                 action=f"{record.formatting_status.value}/{record.extraction_status.value}",
                 detail=record.last_error,
             )
@@ -365,42 +524,6 @@ class IntelligenceWorkflow:
             )
             access_tokens[document.doc_key] = grant.token
         return access_tokens
-
-    async def _register_agent_deliverables(
-        self,
-        request: IntelligenceWorkflowRequest,
-        workflow_id: str,
-        result: IntelligenceWorkflowResult,
-        agent_result: object,
-    ) -> None:
-        """登记 A/B 实际调用统一交付工具产生的文件，而不信任模型文本声明。"""
-        if (
-            request.actor_id == "system-scheduler"
-            or not request.requested_deliverables
-            or self._deliverable_registry is None
-        ):
-            return
-        messages: Any = agent_result.get("messages", []) if isinstance(agent_result, dict) else []
-        specifications = [
-            specification
-            for message in messages
-            if (message.get("name") if isinstance(message, dict) else getattr(message, "name", None))
-            == "write_deliverable"
-            for specification in extract_deliverable_specs(
-                message.get("content", "") if isinstance(message, dict) else getattr(message, "content", "")
-            )
-        ]
-        registered = await self._deliverable_registry.register(
-            user_id=request.actor_id,
-            delivery_id=workflow_id,
-            specifications=specifications,
-        )
-        result.deliverables.extend(
-            WorkflowDeliverable.model_validate({
-                key: value for key, value in deliverable.items() if key != "type"
-            })
-            for deliverable in registered
-        )
 
     @staticmethod
     def _extraction_instruction(

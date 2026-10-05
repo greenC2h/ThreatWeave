@@ -137,6 +137,15 @@ class ChatModelErrorTests(unittest.IsolatedAsyncioTestCase):
             (503, "模型服务余额或配额不足，请充值或更换模型密钥后重试"),
         )
 
+    def test_exposes_approved_source_validation_error_without_echoing_url(self) -> None:
+        """来源白名单拒绝应指向来源配置，而不是显示笼统的 Agent 错误。"""
+        source_error = ValueError("文章 URL 不属于任何已启用的已批准情报源")
+
+        self.assertEqual(
+            _agent_error_detail(source_error),
+            (400, "文章 URL 不属于已批准来源，请使用已登记来源中的文章链接"),
+        )
+
     def test_maps_unsupported_model_to_configuration_error(self) -> None:
         """模型供应商拒绝未知模型时应给出配置修复方向。"""
         model_error = RuntimeError("model not available")

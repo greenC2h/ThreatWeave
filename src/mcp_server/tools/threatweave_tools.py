@@ -6,22 +6,20 @@ import hashlib
 from typing import Any
 
 from fastmcp import Context, FastMCP
+from pydantic import BaseModel
 
 from mcp_server.http_base import request_threatweave_api
+from mcp_server.schema import (
+    ExtractionEntityCandidate,
+    ExtractionRelationCandidate,
+    VALID_ENTITY_TYPES,
+    VALID_RELATION_TYPES,
+    VALID_SEMANTIC_ROLES,
+)
 from intelligence_workflow.repository import WorkflowRepository
 
 
 MAX_DOCUMENT_CHUNK_CHARACTERS = 8_000
-VALID_ENTITY_TYPES = frozenset({
-    "ipv4", "ipv6", "domain", "url", "file_hash", "cve", "threat_actor",
-    "malware", "campaign", "attack_technique", "tool", "organization",
-})
-VALID_RELATION_TYPES = frozenset({
-    "USES", "ATTRIBUTED_TO", "INDICATES", "RESOLVES_TO", "TARGETS", "EXPLOITS", "COMMUNICATES_WITH",
-})
-VALID_SEMANTIC_ROLES = frozenset({"malicious_infrastructure", "victim", "research", "unknown"})
-
-
 def _http_client(ctx: Context):
     """获取 MCP 生命周期内共享的 Java API 客户端。"""
     return ctx.request_context.lifespan_context["http_client"]
@@ -34,12 +32,21 @@ def _content_sha256(content: str) -> str:
 
 def _normalize_extraction_records(value: Any, collection_key: str) -> list[dict[str, Any]]:
     """将模型常见的单对象或外层包装规范为 Java 接口需要的对象列表。"""
+    if isinstance(value, BaseModel):
+        value = value.model_dump(by_alias=True, exclude_none=True)
     if isinstance(value, dict):
         nested = value.get(collection_key)
         value = nested if isinstance(nested, list) else [value]
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+    if not isinstance(value, list):
         raise ValueError(f"{collection_key} 必须是对象列表")
-    return [_normalize_extraction_record(item) for item in value]
+    records: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, BaseModel):
+            item = item.model_dump(by_alias=True, exclude_none=True)
+        if not isinstance(item, dict):
+            raise ValueError(f"{collection_key} 必须是对象列表")
+        records.append(_normalize_extraction_record(item))
+    return records
 
 
 def _normalize_extraction_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -160,9 +167,9 @@ def _validate_extraction_candidates(
             canonical_value = raw.get("canonicalValue")
             semantic_role = raw.get("semanticRole", "unknown")
             if entity_type not in VALID_ENTITY_TYPES:
-                raise ValueError("entityType 不在已确认集合中")
+                raise ValueError("entityType 必须是已确认实体类型，不能使用 name 或 type 代替")
             if not isinstance(canonical_value, str) or not canonical_value.strip():
-                raise ValueError("canonicalValue 不能为空")
+                raise ValueError("canonicalValue 不能为空，不能使用 name 代替")
             if semantic_role not in VALID_SEMANTIC_ROLES:
                 raise ValueError("semanticRole 不在已确认集合中")
             evidence = _evidence_payload(content, raw)
@@ -184,9 +191,12 @@ def _validate_extraction_candidates(
                 "srcEntityType", "srcCanonicalValue", "dstEntityType", "dstCanonicalValue",
             )
             if relation_type not in VALID_RELATION_TYPES:
-                raise ValueError("relationType 不在已确认集合中")
+                raise ValueError("relationType 必须是已确认关系类型，不能使用 type 代替")
             if not all(isinstance(raw.get(field), str) and raw[field].strip() for field in endpoint_fields):
-                raise ValueError("关系两端的实体类型和规范值不能为空")
+                raise ValueError(
+                    "关系必须提供 srcEntityType、srcCanonicalValue、dstEntityType、"
+                    "dstCanonicalValue；不能使用 source、target 或嵌套端点对象"
+                )
             evidence = _evidence_payload(content, raw)
             if evidence is None:
                 raise ValueError("evidence 必须是正文中唯一出现的非空精简引文")
@@ -257,14 +267,24 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
             "chunkCount": len(chunks),
         }
 
+    @mcp.tool(name="threat_extraction_get")
+    async def get_extraction(
+        document_id: int,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """读取已入库的抽取结果与精确出处，仅供 B 导出交付件。"""
+        return await request_threatweave_api(
+            _http_client(ctx), "GET", f"/threatweave/documents/{document_id}/extraction"
+        ) or {"document_id": document_id, "entities": [], "relations": []}
+
     @mcp.tool(name="validate_extraction_evidence")
     async def validate_extraction_evidence(
         document_id: int,
-        entities: list[dict[str, Any]] | dict[str, Any],
-        relations: list[dict[str, Any]] | dict[str, Any] | None = None,
+        entities: list[ExtractionEntityCandidate],
+        relations: list[ExtractionRelationCandidate] | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """校验候选类型、角色和唯一精简出处，并返回可写入与拒绝记录。"""
+        """校验实体与平面关系候选，关系必须使用 src/dstEntityType 和 src/dstCanonicalValue。"""
         document = await request_threatweave_api(
             _http_client(ctx), "GET", f"/threatweave/documents/{document_id}"
         ) or {}
@@ -276,11 +296,11 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
     @mcp.tool(name="threat_extraction_write")
     async def write_extraction(
         document_id: int,
-        entities: list[dict[str, Any]] | dict[str, Any],
-        relations: list[dict[str, Any]] | dict[str, Any] | None = None,
+        entities: list[ExtractionEntityCandidate],
+        relations: list[ExtractionRelationCandidate] | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """原子写入通过证据校验的候选，防止模型绕过校验而破坏 Java 契约。"""
+        """原子写入通过校验的实体和关系；关系端点必须是平面 src/dst 字段。"""
         document = await request_threatweave_api(
             _http_client(ctx), "GET", f"/threatweave/documents/{document_id}"
         ) or {}
@@ -301,8 +321,8 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
     async def save_extraction_preview(
         document_id: int,
         access_token: str,
-        entities: list[dict[str, Any]] | dict[str, Any],
-        relations: list[dict[str, Any]] | dict[str, Any] | None = None,
+        entities: list[ExtractionEntityCandidate],
+        relations: list[ExtractionRelationCandidate] | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         """校验并保存仅抽取草稿，绝不向实体、关系或出处表写入数据。"""
@@ -379,10 +399,19 @@ def register_threatweave_tools(mcp: FastMCP) -> None:
     @mcp.tool(name="threat_graph_query")
     async def query_graph(
         query: str = "",
+        document_ids: list[int] | None = None,
         limit: int = 100,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """查询只读实体与关系子图，仅供 threat_analyst 使用。"""
+        """按文本或规范文档范围查询只读实体与关系子图，仅供 C 使用。"""
+        scoped_document_ids = sorted({document_id for document_id in document_ids or [] if document_id > 0})
         return await request_threatweave_api(
-            _http_client(ctx), "GET", "/threatweave/graph", params={"query": query, "limit": limit}
+            _http_client(ctx),
+            "GET",
+            "/threatweave/graph",
+            params={
+                "query": query,
+                "documentIds": scoped_document_ids or None,
+                "limit": limit,
+            },
         ) or {"entities": [], "relations": []}

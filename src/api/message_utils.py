@@ -67,10 +67,16 @@ def content_to_text(content: Any) -> str:
 
 
 def _parse_json_content(content: Any) -> Any:
-    """解析工具可能以 JSON 字符串封装的结构化内容。"""
+    """解析工具以裸 JSON 或 fenced JSON 字符串封装的结构化内容。"""
     if not isinstance(content, str):
         return content
     stripped = content.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        opening_fence = lines[0].strip().lower()
+        if opening_fence not in {"```json", "```application/json"} or lines[-1].strip() != "```":
+            return content
+        stripped = "\n".join(lines[1:-1]).strip()
     if not stripped or stripped[0] not in "[{":
         return content
     try:

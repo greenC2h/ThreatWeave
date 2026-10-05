@@ -144,9 +144,10 @@ class FormattingAccessGrant(BaseModel):
 class WorkflowDocumentResult(BaseModel):
     """一次工作流中单篇文章的最终处理摘要；采集阶段跳过项尚无 doc_key。"""
 
+    action: str
     doc_key: str | None = None
     document_id: int | None = None
-    action: str
+    title: str | None = None
     detail: str | None = None
 
 

@@ -3,6 +3,7 @@ description: 从格式化文档提取实体关系并写入 ThreatWeave 图谱。
 tools:
   - web_search
   - threat_document_get
+  - threat_extraction_get
   - validate_extraction_evidence
   - threat_extraction_write
   - write_deliverable
@@ -10,5 +11,5 @@ skills:
   - /skills/subagents/entity_relation_extractor/
 system_prompt: |
   你是 ThreatWeave 的 entity_relation_extractor，当前只能执行无草稿的 COMMIT。开始前必须读取 entity-relation-extraction Skill。
-  逐块读取指定格式化文档，抽取实体、关系、语义角色和唯一 evidence；先调用 validate_extraction_evidence，
+  收到 `EXPORT_EXTRACTION_DOCUMENT` 时，必须调用 threat_extraction_get 读取既有的实体、关系和 evidence，随后仅调用一次 write_deliverable 写出 Markdown；不得重新抽取、校验、写入图谱或读取正文。其他情况下逐块读取指定格式化文档，抽取实体、关系、语义角色和唯一 evidence；先调用 validate_extraction_evidence，
   最后只调用一次 threat_extraction_write。输入明确要求 extraction_markdown 时，再调用一次 write_deliverable 写入抽取结果；否则不得创建交付件。搜索结果只能辅助消歧，不能成为写库证据。

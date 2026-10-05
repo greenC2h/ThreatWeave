@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -98,6 +97,13 @@ class FakeDocumentGateway:
         assert document_id == self.document.document_id
         return self.document
 
+    async def get_extraction(self, document_id: int) -> dict[str, object]:
+        assert document_id == self.document.document_id
+        return {
+            "entities": [{"canonical_value": "NightHeron", "entity_type": "threat_actor"}],
+            "relations": [{"relation_type": "USES", "evidence": "uses NightHeron"}],
+        }
+
 
 class FakeDeliverableRegistry:
     """记录工作流登记参数，不依赖沙箱或持久化存储。"""
@@ -110,11 +116,8 @@ class FakeDeliverableRegistry:
         return [{
             "type": "sandbox_deliverable",
             "artifact_id": "a" * 32,
-            "path": "/deliverables/formatted.md",
-            "filename": "formatted.md",
-            "mime_type": "text/markdown",
-            "label": "格式化文章",
-        }]
+            **specification,
+        } for specification in kwargs["specifications"]]
 
 
 def collected_document() -> CollectedDocument:
@@ -132,7 +135,7 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.document = CanonicalDocument(
             document_id=1, doc_key="cncert:1", source_id="cncert", source_name="CNCERT", content="整理后的正文",
-            content_sha256="hash", external_id="1", url="https://example.test/1",
+            content_sha256="hash", title="标题", external_id="1", url="https://example.test/1",
         )
         self.repository = FakeRepository()
         self.formatter = AsyncMock()
@@ -143,6 +146,7 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
             "type": "tool", "name": "threat_extraction_preview", "status": "success",
         }]})
         self.draft_commit_extractor = AsyncMock()
+        self.deliverable_writer = AsyncMock(side_effect=self._write_deliverable)
         self.workflow = IntelligenceWorkflow(
             repository=self.repository,
             document_gateway=FakeDocumentGateway(self.document),
@@ -151,8 +155,18 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 preview_extractor=self.preview_extractor,
                 commit_extractor=self.commit_extractor,
                 draft_commit_extractor=self.draft_commit_extractor,
+                deliverable_writer=self.deliverable_writer,
             ),
         )
+
+    @staticmethod
+    async def _write_deliverable(**kwargs):
+        return {
+            "path": f"/deliverables/{kwargs['filename']}",
+            "filename": kwargs["filename"],
+            "mime_type": kwargs["mime_type"],
+            "label": kwargs["label"],
+        }
 
     async def test_format_only_runs_a_and_not_b(self) -> None:
         collection = CollectionReport("cncert", (CollectionOutcome(
@@ -170,6 +184,22 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.draft_commit_extractor.assert_not_awaited()
         self.assertEqual(result.documents[0].action, "formatted")
 
+    async def test_list_processing_includes_document_title(self) -> None:
+        self.repository.records["cncert:1"] = ProcessingRecord(
+            doc_key="cncert:1",
+            source_id="cncert",
+            document_id=1,
+            formatting_status=FormattingStatus.COMPLETED,
+            extraction_status=ExtractionStatus.COMPLETED,
+        )
+
+        result = await self.workflow.run(IntelligenceWorkflowRequest(
+            mode=IntelligenceWorkflowMode.LIST_PROCESSING,
+            actor_id="user-1",
+        ))
+
+        self.assertEqual(result.documents[0].title, "标题")
+
     async def test_existing_document_full_ingest_runs_b_and_marks_completion(self) -> None:
         result = await self.workflow.run(IntelligenceWorkflowRequest(
             mode=IntelligenceWorkflowMode.INGEST_FULL,
@@ -181,6 +211,49 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("COMMIT", self.commit_extractor.await_args.args[0])
         self.assertEqual(result.documents[0].action, "extracted")
         self.assertEqual(self.repository.records["cncert:1"].extraction_status, ExtractionStatus.COMPLETED)
+
+    async def test_existing_formatted_document_exports_markdown_without_reformatting(self) -> None:
+        """格式化已完成的文档应直接导出，不得拒绝请求或再次写入正文。"""
+        registry = FakeDeliverableRegistry()
+        self.workflow._deliverable_registry = registry
+        result = await self.workflow.run(IntelligenceWorkflowRequest(
+            mode=IntelligenceWorkflowMode.FORMAT_ONLY,
+            actor_id="user-1",
+            document_ids=[1],
+            requested_deliverables=["formatted_markdown"],
+        ))
+
+        self.formatter.assert_not_awaited()
+        self.assertIn("整理后的正文", self.deliverable_writer.await_args.kwargs["content"])
+        self.assertEqual(result.documents[0].action, "exported_formatted_markdown")
+        self.assertEqual(result.failures, [])
+        self.assertEqual(result.deliverables[0].filename, "document-1-formatted.md")
+
+    async def test_completed_extraction_exports_markdown_without_reextracting(self) -> None:
+        """已入库的抽取结果必须能单独导出，不能被完成状态短路。"""
+        registry = FakeDeliverableRegistry()
+        self.workflow._deliverable_registry = registry
+        self.repository.records[self.document.doc_key] = ProcessingRecord(
+            doc_key=self.document.doc_key,
+            source_id="cncert",
+            document_id=self.document.document_id,
+            formatted_content_sha256=self.document.content_sha256,
+            formatting_status=FormattingStatus.COMPLETED,
+            extraction_status=ExtractionStatus.COMPLETED,
+            extracted_content_sha256=self.document.content_sha256,
+        )
+        result = await self.workflow.run(IntelligenceWorkflowRequest(
+            mode=IntelligenceWorkflowMode.INGEST_FULL,
+            actor_id="user-1",
+            document_ids=[1],
+            requested_deliverables=["extraction_markdown"],
+        ))
+
+        self.commit_extractor.assert_not_awaited()
+        self.assertIn("NightHeron", self.deliverable_writer.await_args.kwargs["content"])
+        self.assertEqual(result.documents[0].action, "exported_extraction_markdown")
+        self.assertEqual(result.failures, [])
+        self.assertEqual(result.deliverables[0].filename, "document-1-extraction.md")
 
     async def test_preview_does_not_mark_document_as_extracted(self) -> None:
         result = await self.workflow.run(IntelligenceWorkflowRequest(
@@ -234,21 +307,10 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.documents[0].action, "skipped_collection")
         self.assertEqual(result.documents[0].detail, "来源规则已跳过")
 
-    async def test_format_export_registers_only_actual_tool_output(self) -> None:
-        """用户请求下载时，A 的统一工具结果才会成为 artifact。"""
+    async def test_format_export_registers_the_confirmed_document_content(self) -> None:
+        """用户请求下载时，工作流直接写已确认的 Java 正文并登记 artifact。"""
         registry = FakeDeliverableRegistry()
         self.workflow._deliverable_registry = registry
-        self.formatter.return_value = {"messages": [{
-            "type": "tool",
-            "name": "write_deliverable",
-            "content": json.dumps({
-                "type": "deliverable_spec",
-                "path": "/deliverables/formatted.md",
-                "filename": "formatted.md",
-                "mime_type": "text/markdown",
-                "label": "格式化文章",
-            }),
-        }]}
         collection = CollectionReport("cncert", (CollectionOutcome(
             url="https://example.test/1", status="ok", document=collected_document(),
         ),))
@@ -258,25 +320,16 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 actor_id="user-1",
                 source_id="cncert",
                 requested_deliverables=["formatted_markdown"],
-            ))
+        ))
         self.assertEqual(len(registry.calls), 1)
         self.assertEqual(registry.calls[0]["user_id"], "user-1")
-        self.assertEqual(result.deliverables[0].filename, "formatted.md")
+        self.assertEqual(result.deliverables[0].filename, "document-1-formatted.md")
+        self.assertIn("整理后的正文", self.deliverable_writer.await_args.kwargs["content"])
 
     async def test_scheduler_never_registers_user_deliverables(self) -> None:
         """定期采集的调度身份不能创建无归属下载件。"""
         registry = FakeDeliverableRegistry()
         self.workflow._deliverable_registry = registry
-        self.formatter.return_value = {"messages": [{
-            "name": "write_deliverable",
-            "content": json.dumps({
-                "type": "deliverable_spec",
-                "path": "/deliverables/formatted.md",
-                "filename": "formatted.md",
-                "mime_type": "text/markdown",
-                "label": "格式化文章",
-            }),
-        }]}
         collection = CollectionReport("cncert", (CollectionOutcome(
             url="https://example.test/1", status="ok", document=collected_document(),
         ),))
@@ -286,9 +339,10 @@ class IntelligenceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 actor_id="system-scheduler",
                 source_id="cncert",
                 requested_deliverables=["formatted_markdown"],
-            ))
+        ))
         self.assertEqual(registry.calls, [])
         self.assertEqual(result.deliverables, [])
+        self.deliverable_writer.assert_not_awaited()
 
 
 if __name__ == "__main__":

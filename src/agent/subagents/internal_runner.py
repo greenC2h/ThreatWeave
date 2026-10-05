@@ -85,7 +85,7 @@ async def _load_config(name: str, sandbox_backend: SandboxBackendProxy) -> dict[
         )
     if name == "entity_relation_extractor_commit":
         common_tools, threat_tools = await load_threatweave_tools({
-            "threat_document_get", "validate_extraction_evidence", "threat_extraction_write",
+            "threat_document_get", "threat_extraction_get", "validate_extraction_evidence", "threat_extraction_write",
         })
         return load_subagent(
             _CONFIG_DIRECTORY / "entity_relation_extractor_commit.yaml",

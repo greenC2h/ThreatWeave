@@ -21,6 +21,7 @@ class CanonicalDocument:
     source_name: str
     content: str
     content_sha256: str
+    title: str | None = None
     external_id: str | None = None
     url: str | None = None
 
@@ -33,6 +34,7 @@ class CanonicalDocument:
                 doc_key=str(value["doc_key"]),
                 source_id=value.get("source_id"),
                 source_name=str(value["source_name"]),
+                title=value.get("title"),
                 content=str(value["content"]),
                 content_sha256=str(value["content_sha256"]),
                 external_id=value.get("external_id"),
@@ -63,6 +65,16 @@ class DocumentGateway:
                 params={"docKey": doc_key},
             )
         return CanonicalDocument.from_api(response)
+
+    async def get_extraction(self, document_id: int) -> dict[str, Any]:
+        """读取已确认写入知识图谱的实体、关系和证据，供确定性导出使用。"""
+        async with self._client() as client:
+            response = await request_threatweave_api(
+                client, "GET", f"/threatweave/documents/{document_id}/extraction"
+            )
+        if not isinstance(response, dict):
+            raise ValueError("ThreatWeave 抽取结果接口返回了无效数据")
+        return response
 
     @staticmethod
     def _client() -> httpx.AsyncClient:

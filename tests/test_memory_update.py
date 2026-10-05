@@ -20,6 +20,7 @@ from agent.middlewares.memory_update import (
     _merge_recent_queries,
     _last_user_message,
     _preferences_from_content,
+    ensure_preferences_file,
     preferences_file_path,
 )
 from agent.schema import ThreatWeaveContext, UserPreferences
@@ -150,6 +151,18 @@ class MemoryUpdateMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(preferences.recent_queries, ["CVE 威胁趋势图", "恶意软件家族"])
         self.assertEqual(value["created_at"], "2026-01-01T00:00:00+00:00")
+
+    async def test_ensure_preferences_file_creates_readable_defaults(self) -> None:
+        """首次构建 Agent 前必须写入可由 read_file 读取的默认偏好文件。"""
+        store = SimpleNamespace(aget=AsyncMock(return_value=None), aput=AsyncMock())
+
+        await ensure_preferences_file(store, "new-user")
+
+        store.aget.assert_awaited_once_with(("new-user",), preferences_file_path("new-user"))
+        namespace, path, value = store.aput.await_args.args
+        self.assertEqual(namespace, ("new-user",))
+        self.assertEqual(path, preferences_file_path("new-user"))
+        self.assertEqual(_preferences_from_content(value["content"]), UserPreferences())
 
     async def test_skips_greetings_without_calling_summary_model(self) -> None:
         """普通问候不应消耗摘要模型或创建偏好文件。"""

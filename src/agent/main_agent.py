@@ -43,7 +43,7 @@ from agent.tools.mcp_client import load_common_tools
 from agent.tools.skill_tools import create_skill_management_tools
 from agent.tools.async_sandbox_tools import create_async_sandbox_tools
 from agent.tools.intelligence_workflow_tools import create_intelligence_workflow_tools
-from agent.middlewares.memory_update import MemoryUpdateMiddleware
+from agent.middlewares.memory_update import MemoryUpdateMiddleware, ensure_preferences_file
 from agent.middlewares.skill_management_visibility import (
     SkillManagementVisibilityMiddleware,
 )
@@ -89,6 +89,8 @@ async def create_main_agent(
     """
     configurable = config.get("configurable", {})
     user_id = str(configurable.get("user_id", "anonymous"))
+    # 主提示要求每轮读取偏好文件，因此首次构图前必须提供默认文件。
+    await ensure_preferences_file(store, user_id)
 
     # 文件路径决定存储位置：普通文件和命令执行进入 OpenSandbox；
     # 只有 /memories/ 下的文件写入 PostgreSQL。

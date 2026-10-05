@@ -34,6 +34,18 @@ BROWSER_HEADERS: dict[str, str] = {
 
 # 重试请求：连接错误、5xx；不重试被 WAF 拦截的 4xx。
 _RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
+_CHALLENGE_URL_MARKERS = ("/mp/wappoc_appmsgcaptcha",)
+_CHALLENGE_BODY_MARKERS = ("环境异常", "完成验证后即可继续访问", "去验证")
+
+
+def _is_bot_challenge_page(final_url: str, content: bytes) -> bool:
+    """识别 HTTP 200 返回的反爬校验页，避免把它当作文章正文。"""
+    normalized_url = final_url.lower()
+    if any(marker in normalized_url for marker in _CHALLENGE_URL_MARKERS):
+        return True
+
+    page_text = content.decode("utf-8", errors="ignore")
+    return all(marker in page_text for marker in _CHALLENGE_BODY_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,8 @@ class PageFetcher:
         status = response.status_code
         final_url = str(response.url)
         if status == 200 and response.content:
+            if _is_bot_challenge_page(final_url, response.content):
+                return FetchResult("blocked", final_url, status_code=status, error="命中机器人校验页")
             return FetchResult("ok", final_url, status_code=status, content=response.content)
         if status in (403, 429):  # 反爬/限流，通常重试无益且可能加重拦截
             return FetchResult("blocked", final_url, status_code=status, error=f"HTTP {status}")

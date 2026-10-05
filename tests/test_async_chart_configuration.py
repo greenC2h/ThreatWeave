@@ -127,7 +127,6 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
                 "web_search",
                 "threat_graph_query",
                 "generate_network_graph_html",
-                "build_threat_graph_html",
                 "write_deliverable",
             ],
         )
@@ -146,11 +145,24 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("/skills/subagents/threat_analyst/", config)
         self.assertNotIn("threat_extraction_write", config)
         self.assertNotIn("request_additional_info", config)
-        self.assertIn("build_threat_graph_html", config)
+        self.assertNotIn("build_threat_graph_html", config)
         self.assertIn("write_deliverable", config)
         self.assertNotIn("DELIVERABLE:", config)
         self.assertIn("threat-analysis Skill", config)
         self.assertIn("威胁", config)
+
+    def test_sync_workflow_orchestrator_preserves_structured_deliverables(self) -> None:
+        """同步任务结果必须保留 artifact，SSE 才能即时展示下载入口。"""
+        config_path = Path(__file__).resolve().parents[1] / "src/agent/subagents/configs/intelligence_workflow_orchestrator.yaml"
+        config = config_path.read_text(encoding="utf-8")
+
+        self.assertIn("原样返回该工具的 JSON 结果", config)
+        self.assertIn("`deliverables`", config)
+
+    def test_extraction_markdown_request_has_an_unambiguous_workflow_mapping(self) -> None:
+        """用户要提取结果文件时，路由规则不能降级为只查处理状态。"""
+        self.assertIn("`ingest_full` + `extraction_markdown`", system_prompt)
+        self.assertIn("不得使用 `list_processing`", system_prompt)
 
     def test_threat_analyst_skill_front_matter_is_valid_yaml(self) -> None:
         """Skill 元数据无效时，DeepAgents 会静默跳过完整交付流程。"""

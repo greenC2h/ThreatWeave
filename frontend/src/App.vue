@@ -342,6 +342,16 @@ async function reloadCurrentSessionMessages(expectedThreadId) {
   }
 }
 
+async function refreshCurrentSessionOnFocus() {
+  // 页面回到前台时同步当前会话，补齐后台已落库的交付件。
+  if (isDisposed || !threadId.value || isConversationBusy.value || queuedMessages.value.length) return;
+  try {
+    await reloadCurrentSessionMessages(threadId.value);
+  } catch {
+    // 焦点同步是补偿动作，常规会话加载和发送请求仍会呈现可见错误。
+  }
+}
+
 function startAsyncTaskPolling(taskId, delegationMessage = null) {
   if (isDisposed || !taskId || asyncTaskPollers.has(taskId)) return;
 
@@ -369,8 +379,10 @@ function startAsyncTaskPolling(taskId, delegationMessage = null) {
         if (delegationMessage) {
           delegationMessage.toolStatus = asyncTaskToolStatus(status);
           delegationMessage.result = status.result || status.error || "后台任务未返回报告";
-          delegationMessage.visualization = status.visualization || null;
-          delegationMessage.deliverables = status.deliverables || [];
+          // 任务结果投递到主会话后，交付件由新增的最终消息展示；保留任务卡片
+          // 中的资源会让同一个文件出现两个下载入口。
+          delegationMessage.visualization = status.delivered ? null : status.visualization || null;
+          delegationMessage.deliverables = status.delivered ? [] : status.deliverables || [];
           delegationMessage.deliveryStatus = status.delivered ? "delivered" : "pending";
         }
         if (status.delivered) {
@@ -476,8 +488,6 @@ function restoreAsyncDelegationResults(restoredMessages) {
         && delegation.asyncTaskId && message.asyncTaskId === delegation.asyncTaskId);
     if (result) {
       delegation.result = result.content;
-      delegation.visualization = result.visualization || null;
-      delegation.deliverables = result.deliverables || [];
     }
   }
 }
@@ -493,8 +503,10 @@ function restoreSessionState(response) {
       if (completed) {
         message.toolStatus = asyncTaskToolStatus(completed);
         message.result = completed.result || completed.error || message.result;
-        message.visualization = completed.visualization || message.visualization;
-        message.deliverables = completed.deliverables || message.deliverables;
+        // 终态结果已经写入后续的主会话消息；异步任务卡片只保留摘要，
+        // 避免刷新或投递重试时再次显示相同的下载入口。
+        message.visualization = completed.delivered ? null : completed.visualization || message.visualization;
+        message.deliverables = completed.delivered ? [] : completed.deliverables || message.deliverables;
       } else {
         // 历史的 done 可能仅表示启动工具完成，必须查询后台任务的真实终态。
         message.toolStatus = "calling";
@@ -696,6 +708,10 @@ function streamHandlers() {
           message.deliverables = event.deliverables || [];
         } else if (event.tool_name === "task") {
           message.result = event.text || "子 Agent 未返回最终报告";
+          // 同步编排器的 artifact 与普通工具使用相同 SSE 字段；必须保留在
+          // 委派卡片中，用户无需再发一条“下载”消息才能获得文件入口。
+          message.visualization = event.visualization || null;
+          message.deliverables = event.deliverables || [];
         }
         if (message.role === "delegation" && !message.subagentName) {
           const subagentName = inferSubagentName(message.args);
@@ -902,6 +918,7 @@ onMounted(async () => {
     if (!isDisposed) {
       saveCurrentUser(verifiedUser);
       await initializeSession();
+      window.addEventListener("focus", refreshCurrentSessionOnFocus);
     }
   } catch {
     if (!isDisposed) {
@@ -918,5 +935,6 @@ onUnmounted(() => {
   isDisposed = true;
   lifetimeController.abort();
   stopAllAsyncTaskPolling();
+  window.removeEventListener("focus", refreshCurrentSessionOnFocus);
 });
 </script>
