@@ -26,12 +26,16 @@ load_dotenv(PROJECT_ROOT / ".env", override=True)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
+DEEPSEEK_REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("DEEPSEEK_REQUEST_TIMEOUT_SECONDS", "120")
+)
 
 MAIN_MODEL = ChatDeepSeek(
     model=DEEPSEEK_MODEL,
     extra_body={"thinking": {"type": "disabled"}},
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
+    timeout=DEEPSEEK_REQUEST_TIMEOUT_SECONDS,
 )
 
 # 摘要专用模型
@@ -41,6 +45,7 @@ SUMMARY_MODEL = ChatDeepSeek(
     extra_body={"thinking": {"type": "disabled"}},
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
+    timeout=DEEPSEEK_REQUEST_TIMEOUT_SECONDS,
 )
 
 # ============================================================

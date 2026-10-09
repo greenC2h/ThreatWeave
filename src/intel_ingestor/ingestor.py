@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from intel_ingestor.cleaner import decode_html, detect_charset_meta, prepare_article_html
 from intel_ingestor.fetcher import PageFetcher
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _ANCHOR_RE = re.compile(r"<a(?P<attrs>[^>]*)>(?P<inner>.*?)</a>", re.DOTALL)
 _DATE_IN_LI_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2})\]")
 _WINDOW_OPEN_RE = re.compile(r'window\.open\(\s*["\']([^"\']+)["\']\s*\)')
+_HILLSTONE_LIST_LIMIT = 10
 
 
 def _attr(attrs: str, name: str) -> str | None:
@@ -182,6 +183,75 @@ def _prepare_hillstone_json(content: bytes) -> tuple[str, str | None, str]:
     return title, published_at, "\n\n".join(sections)
 
 
+def _hillstone_publish_date(value: object) -> str | None:
+    """把 Hillstone 列表中的毫秒时间戳转换为采集模型使用的日期。"""
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).date().isoformat()
+    return None
+
+
+def _hillstone_list_records(payload: object) -> list[dict[str, object]]:
+    """从 Hillstone 分页响应中提取文章记录，兼容不同部署的分页包装。"""
+    if not isinstance(payload, dict):
+        return []
+    result = payload.get("result")
+    if isinstance(result, list):
+        return [item for item in result if isinstance(item, dict)]
+    if not isinstance(result, dict):
+        return []
+    for key in ("list", "records", "rows", "items", "data"):
+        records = result.get(key)
+        if isinstance(records, list):
+            return [item for item in records if isinstance(item, dict)]
+    return []
+
+
+def discover_hillstone_json_refs(
+    listing_json: bytes | str,
+    source: SourceConfig,
+) -> list[ArticleRef]:
+    """从 Hillstone 列表接口响应发现文章详情页引用。"""
+    if isinstance(listing_json, bytes):
+        listing_json = listing_json.decode("utf-8")
+    payload = json.loads(listing_json)
+    pattern = re.compile(source.article_url_pattern)
+    refs: list[ArticleRef] = []
+    seen: set[str] = set()
+    for record in _hillstone_list_records(payload):
+        article_id = record.get("id")
+        if article_id is None:
+            continue
+        raw_url = record.get("url") or record.get("detailUrl")
+        if raw_url:
+            url = urljoin(source.entry_url, str(raw_url))
+        elif source.article_url_template:
+            url = source.article_url_template.format(id=article_id)
+        else:
+            continue
+        if not pattern.match(url) or url in seen:
+            continue
+        seen.add(url)
+        refs.append(
+            ArticleRef(
+                url=url,
+                title=str(record.get("name") or "").strip() or None,
+                published_at=_hillstone_publish_date(record.get("publishTime")),
+            )
+        )
+    return refs
+
+
+def _hillstone_listing_url(source: SourceConfig, max_articles: int | None) -> str:
+    """生成 Hillstone 列表接口的首批分页 URL。"""
+    if not source.listing_api_url:
+        raise ValueError(f"来源 {source.source_id} 未配置 Hillstone 列表接口")
+    limit = max_articles if max_articles is not None else _HILLSTONE_LIST_LIMIT
+    limit = max(1, min(limit, _HILLSTONE_LIST_LIMIT))
+    query = urlencode({"conditions": "[]", "start": 0, "limit": limit})
+    separator = "&" if "?" in source.listing_api_url else "?"
+    return f"{source.listing_api_url}{separator}{query}"
+
+
 def derive_doc_key(source_id: str, external_id: str | None, url: str) -> str:
     """生成与正文无关的稳定 doc_key。
 
@@ -256,8 +326,25 @@ async def collect_source(
     page_fetcher = fetcher or PageFetcher()
     if article_url:
         refs = [ArticleRef(url=article_url, title=None, published_at=None)]
+    elif source.listing_api_url:
+        listing_url = _hillstone_listing_url(source, max_articles)
+        listing = await page_fetcher.fetch(listing_url)
+        if listing.status != "ok":
+            return CollectionReport(
+                source_id=source_id,
+                listing_status=listing.status_code,
+                listing_error=f"{listing.status} {listing.error or ''}".strip(),
+            )
+        try:
+            refs = discover_hillstone_json_refs(listing.content, source)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            return CollectionReport(
+                source_id=source_id,
+                listing_status=listing.status_code,
+                listing_error=f"列表解析失败: {exc}",
+            )
     elif source.parser_type == "hillstone_hot_threat_json":
-        # 该来源配置的是公开详情页而不是列表页，入口 URL 本身就是待处理文章。
+        # 兼容旧配置：未配置列表接口时，入口 URL 本身就是待处理文章。
         refs = [ArticleRef(url=source.entry_url, title=None, published_at=None)]
     else:
         listing = await page_fetcher.fetch(source.entry_url)

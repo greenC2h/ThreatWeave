@@ -533,6 +533,7 @@ async def _stream_response_unlocked(
     # 仅用消息与分片索引关联后续不再携带 ID 的参数增量。
     tool_call_ids: dict[str, str] = {}
     tool_subagent_names: dict[str, str] = {}
+    deliverable_tool_ids: set[str] = set()
     pending_tool_ids: set[str] = set()
     delegation_tool_ids: set[str] = set()
     pending_interrupts: dict[str, dict[str, Any]] = {}
@@ -618,6 +619,8 @@ async def _stream_response_unlocked(
                     pending_tool_ids.add(tool_call_id)
                     if tool_name == "task":
                         delegation_tool_ids.add(tool_call_id)
+                    elif tool_name == "write_deliverable":
+                        deliverable_tool_ids.add(tool_call_id)
                     start_event = {
                         "type": "tool_start",
                         "tool_call_id": tool_call_id,
@@ -731,6 +734,31 @@ async def _stream_response_unlocked(
                 messages=_messages_for_turn(_state_messages(state), previous_messages),
                 task_tool_ids=delegation_tool_ids,
             )
+            if registered_deliverables:
+                frontend_deliverables = [
+                    {
+                        **item,
+                        "download_src": f"/deliverables/{item['artifact_id']}?user_id={request.user_id}",
+                        "preview_src": (
+                            f"/deliverables/{item['artifact_id']}?user_id={request.user_id}&preview=1"
+                            if item["mime_type"] == "text/html" else None
+                        ),
+                    }
+                    for item in registered_deliverables
+                ]
+                # write_deliverable 的首次工具结果只含受控沙箱路径。文件登记发生在
+                # 流末尾，因此需要再次回填同一工具卡片，才能让实时界面拿到下载入口。
+                for tool_call_id in deliverable_tool_ids:
+                    yield _create_sse_message({
+                        "type": "tool_result",
+                        "tool_call_id": tool_call_id,
+                        "tool_name": "write_deliverable",
+                        "text": "交付件已登记，可下载。",
+                        "status": "done",
+                        "tool_status": "done",
+                        "source": "main",
+                        "deliverables": frontend_deliverables,
+                    })
             for tool_call_id in delegation_tool_ids:
                 if registered_deliverables:
                     yield _create_sse_message({

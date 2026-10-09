@@ -94,6 +94,12 @@ def load_source(source_id: str) -> SourceConfig:
     if not re.match(r"^https?://", entry_url, re.IGNORECASE):
         raise ValueError(f"来源 {source_id} 的 entry_url 必须是 http(s) URL")
 
+    listing_api_url = data.get("listing_api_url")
+    if listing_api_url and not re.match(
+        r"^https?://", str(listing_api_url).strip(), re.IGNORECASE
+    ):
+        raise ValueError(f"来源 {source_id} 的 listing_api_url 必须是 http(s) URL")
+
     try:
         article_pattern = re.compile(str(data["article_url_pattern"]))
     except re.error as exc:
@@ -116,6 +122,8 @@ def load_source(source_id: str) -> SourceConfig:
         article_url_pattern=str(data["article_url_pattern"]),
         article_link_attribute=str(html.get("article_link_attribute", "href")),
         fetch_url_template=data.get("fetch_url_template"),
+        listing_api_url=str(listing_api_url).strip() if listing_api_url else None,
+        article_url_template=data.get("article_url_template"),
         external_id_query_parameter=data.get("external_id_query_parameter"),
         charset=html.get("charset"),
         content_selector=html.get("content_selector"),

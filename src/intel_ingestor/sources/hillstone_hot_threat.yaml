@@ -1,11 +1,13 @@
 source_id: hillstone_hot_threat
 display_name: 山石云瞻热点威胁
 enabled: true
-entry_url: https://ti.hillstonenet.com.cn/hotthreat/detail?id=4715
+entry_url: https://ti.hillstonenet.com.cn/hotthreat/list
 parser_type: hillstone_hot_threat_json
 minimum_interval_seconds: 86400
 license: public_information_subject_to_source_terms
 article_url_pattern: https://ti\.hillstonenet\.com\.cn/hotthreat/detail\?id=\d+
+listing_api_url: https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/list
+article_url_template: https://ti.hillstonenet.com.cn/hotthreat/detail?id={id}
 fetch_url_template: https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/detail?id={id}
 external_id_query_parameter: id
 required_environment_variables: []
@@ -16,4 +18,4 @@ html:
   title_selector: null
   date_selector: null
   skip_selectors: []
-notes: 通过公开详情接口采集热点威胁正文；详情页本身为前端单页应用壳。
+notes: 通过公开列表接口发现热点威胁，再调用详情接口采集正文；列表页和详情页均为前端单页应用壳。

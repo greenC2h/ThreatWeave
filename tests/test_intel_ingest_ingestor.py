@@ -44,6 +44,12 @@ ARTICLE_A_URL = "https://www.cert.org.cn/publish/main/11/2026/202606011456181093
 ARTICLE_B_URL = "https://www.cert.org.cn/publish/main/11/2026/20260323113411436406469/20260323113411436406469_.html"
 HILLSTONE_URL = "https://ti.hillstonenet.com.cn/hotthreat/detail?id=4715"
 HILLSTONE_API_URL = "https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/detail?id=4715"
+HILLSTONE_LIST_URL = (
+    "https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/list?"
+    "conditions=%5B%5D&start=0&limit=2"
+)
+HILLSTONE_SECOND_URL = "https://ti.hillstonenet.com.cn/hotthreat/detail?id=4714"
+HILLSTONE_SECOND_API_URL = "https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/detail?id=4714"
 LISTING_HTML = (
     '<li><span>[2026-06-01]</span>'
     '<a href="javascript:void(0)" onclick=window.open("/publish/main/11/2026/20260601145618109326016/20260601145618109326016_.html")>文章A</a></li>'
@@ -72,6 +78,11 @@ HILLSTONE_JSON = (
     '"associatedDomain":"example.test",'
     '"protectionAdvice":"及时安装安全更新。",'
     '"eventScope":"国外"}}'
+)
+HILLSTONE_LIST_JSON = (
+    '{"code":200,"message":"OK","result":{"list":['
+    '{"id":4715,"name":"热点威胁 A","publishTime":1790006400000},'
+    '{"id":4714,"name":"热点威胁 B","publishTime":1790006400000}]}}'
 )
 
 
@@ -164,6 +175,65 @@ class CollectArticleTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CollectSourceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_collect_source_discovers_hillstone_articles_from_listing_api(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "hillstone_hot_threat.yaml").write_text(
+                """
+source_id: hillstone_hot_threat
+display_name: 山石云瞻热点威胁
+enabled: true
+entry_url: https://ti.hillstonenet.com.cn/hotthreat/list
+parser_type: hillstone_hot_threat_json
+minimum_interval_seconds: 86400
+license: public_information_subject_to_source_terms
+article_url_pattern: https://ti\\.hillstonenet\\.com\\.cn/hotthreat/detail\\?id=\\d+
+listing_api_url: https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/list
+article_url_template: https://ti.hillstonenet.com.cn/hotthreat/detail?id={id}
+fetch_url_template: https://ti.hillstonenet.com.cn/api/report/hot-threat/advice/detail?id={id}
+external_id_query_parameter: id
+html: {}
+""".strip(),
+                encoding="utf-8",
+            )
+            old = os.environ.get("THREATWEAVE_SOURCES_DIR")
+            os.environ["THREATWEAVE_SOURCES_DIR"] = tmp
+            try:
+                report = await collect_source(
+                    "hillstone_hot_threat",
+                    max_articles=2,
+                    fetcher=RoutingFetcher({
+                        HILLSTONE_LIST_URL: FetchResult(
+                            "ok",
+                            HILLSTONE_LIST_URL,
+                            status_code=200,
+                            content=HILLSTONE_LIST_JSON.encode("utf-8"),
+                        ),
+                        HILLSTONE_API_URL: FetchResult(
+                            "ok",
+                            HILLSTONE_API_URL,
+                            status_code=200,
+                            content=HILLSTONE_JSON.encode("utf-8"),
+                        ),
+                        HILLSTONE_SECOND_API_URL: FetchResult(
+                            "ok",
+                            HILLSTONE_SECOND_API_URL,
+                            status_code=200,
+                            content=HILLSTONE_JSON.encode("utf-8"),
+                        ),
+                    }),
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("THREATWEAVE_SOURCES_DIR", None)
+                else:
+                    os.environ["THREATWEAVE_SOURCES_DIR"] = old
+
+        self.assertEqual(report.collected_count, 2)
+        self.assertEqual(
+            [outcome.document.external_id for outcome in report.outcomes],
+            ["4715", "4714"],
+        )
+
     async def test_collect_source_treats_hillstone_entry_as_detail_article(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "hillstone_hot_threat.yaml").write_text(

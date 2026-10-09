@@ -319,6 +319,59 @@ class ChatOwnershipTests(unittest.IsolatedAsyncioTestCase):
             if item["tool_name"] == "query":
                 self.assertEqual(''.join(entry["args"] for entry in related if entry["type"] == "tool_args"), '{"q":"value"}')
 
+    async def test_stream_backfills_registered_direct_deliverable(self) -> None:
+        """直接写入的交付件在流结束登记后，实时工具卡片也必须收到下载入口。"""
+        tool_call_id = "write-deliverable"
+        specification = {
+            "type": "deliverable_spec",
+            "path": "/deliverables/report.md",
+            "filename": "report.md",
+            "mime_type": "text/markdown",
+            "label": "报告",
+        }
+
+        async def stream(*args, **kwargs):
+            yield {"type": "messages", "data": (
+                AIMessageChunk(id="m1", content="", tool_call_chunks=[{
+                    "name": "write_deliverable", "id": tool_call_id, "index": 0, "args": "{}",
+                }]), {},
+            )}
+            yield {"type": "messages", "data": (
+                ToolMessage(content=json.dumps(specification), name="write_deliverable", tool_call_id=tool_call_id), {},
+            )}
+
+        state = SimpleNamespace(values={"messages": [ToolMessage(
+            content=json.dumps(specification), name="write_deliverable", tool_call_id=tool_call_id,
+        )]})
+        agent = SimpleNamespace(
+            astream=stream,
+            aget_state=AsyncMock(side_effect=[
+                SimpleNamespace(values={"messages": []}),
+                state,
+            ]),
+            aupdate_state=AsyncMock(),
+        )
+        loader = AgentLoader()
+        loader.get_session = AsyncMock(return_value={})
+        loader.save_session = AsyncMock()
+        loader.get_agent_for_user = AsyncMock(return_value=agent)
+        registered = [{
+            "type": "sandbox_deliverable", "artifact_id": "a" * 32,
+            **{key: value for key, value in specification.items() if key != "type"},
+        }]
+        loader.register_user_deliverables = AsyncMock(return_value=registered)
+
+        with patch("api.chat.agent_loader", loader):
+            output = [json.loads(item.removeprefix("data: ")) async for item in _stream_response(
+                ChatRequest(message="生成 Markdown", user_id="u1", thread_id="thread"),
+                thread_id="thread", agent_input={}, is_resume=False,
+            )]
+
+        backfill = [event for event in output if event["type"] == "tool_result" and event.get("text") == "交付件已登记，可下载。"]
+        self.assertEqual(len(backfill), 1)
+        self.assertEqual(backfill[0]["tool_call_id"], tool_call_id)
+        self.assertEqual(backfill[0]["deliverables"][0]["artifact_id"], "a" * 32)
+
     async def test_initial_resume_and_history_share_canonical_tool_id(self) -> None:
         """恢复请求没有上一请求的映射，结果仍应匹配初始或历史恢复的工具卡片。"""
         call_id = "call_order_approval"

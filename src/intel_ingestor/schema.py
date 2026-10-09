@@ -25,6 +25,10 @@ class SourceConfig:
       其他业务无关内容仍由 Pipeline 的格式化模型判断。
     - ``fetch_url_template``：详情页由前端单页应用渲染时，按文章 URL 查询参数
       生成实际公开详情接口地址。
+    - ``listing_api_url``：列表页由前端单页应用渲染时，供采集器发现文章的公开
+      列表接口地址。
+    - ``article_url_template``：列表接口只返回文章 ID 时，用 ID 生成文章详情页
+      URL。
     - ``external_id_query_parameter``：外部文章标识位于查询参数时使用，避免同一路径
       的多篇文章共享同一个 doc_key。
     """
@@ -39,6 +43,8 @@ class SourceConfig:
     article_url_pattern: str
     article_link_attribute: str = "href"
     fetch_url_template: str | None = None
+    listing_api_url: str | None = None
+    article_url_template: str | None = None
     external_id_query_parameter: str | None = None
     charset: str | None = None
     content_selector: str | None = None
