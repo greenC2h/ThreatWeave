@@ -119,6 +119,19 @@ class HistorySessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0].tool_status, "done")
         self.assertEqual(messages[1].async_task_id, task_id)
 
+    def test_hides_internal_async_result_context(self) -> None:
+        """主 Agent 的异步结果上下文不能在历史里显示为一条用户消息。"""
+        messages = serialize_messages([
+            HumanMessage(
+                content="内部子 Agent 结果。",
+                additional_kwargs={"internal_async_task_result": True},
+            ),
+            AIMessage(content="主 Agent 已整理结果。", additional_kwargs={"source": "main"}),
+        ])
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].content, "主 Agent 已整理结果。")
+
     def test_failed_tool_results_remain_errors_in_history(self) -> None:
         for name in ["request_erp", "task", "start_async_task"]:
             messages = serialize_messages([

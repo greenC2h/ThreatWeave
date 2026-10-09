@@ -103,6 +103,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("get_chart_spec", config)
         self.assertIn("generate_visualization", config)
         self.assertIn("write_deliverable", config)
+        self.assertIn("禁止自行编写、拼接或输出 HTML 图表代码", config)
         self.assertNotIn("threat_graph_query", config)
         self.assertNotIn("generate_network_graph_html", config)
 
@@ -121,6 +122,8 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("execute_read_query", text)
         self.assertIn("get_chart_spec", text)
         self.assertIn("generate_visualization", text)
+        self.assertIn("严禁自行编写、拼接或输出 HTML 图表代码", text)
+        self.assertIn("必须调用 `generate_visualization`", text)
         self.assertNotIn("threat_graph_query", text)
         self.assertNotIn("generate_network_graph_html", text)
 

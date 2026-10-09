@@ -37,7 +37,12 @@ class ThreadCoordinationTests(unittest.IsolatedAsyncioTestCase):
         self.loader.get_thread_state = AsyncMock(
             return_value=SimpleNamespace(values={"messages": []}, next=(), interrupts=())
         )
-        self.agent = SimpleNamespace(aupdate_state=AsyncMock())
+        self.agent = SimpleNamespace(
+            ainvoke=AsyncMock(return_value={
+                "messages": [AIMessage(id="main-final", content="主 Agent 整理后的回复。")],
+            }),
+            aupdate_state=AsyncMock(),
+        )
         self.loader.get_agent_for_user = AsyncMock(return_value=self.agent)
         self.loader.save_session = AsyncMock()
 
@@ -463,7 +468,7 @@ class AsyncStatusBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.client.threads.get_state.side_effect = None
         self.client.threads.get_state.return_value = {"values": {"messages": [{"type": "ai", "content": "actual report"}]}}
         response = await get_async_task_status("task", user_id="u1")
-        self.assertEqual(response.result, "actual report")
+        self.assertEqual(response.result, "主 Agent 已完成结果整理。")
         self.loader.publish_async_task_result.assert_awaited_once()
 
     async def test_empty_success_result_is_not_fabricated(self) -> None:

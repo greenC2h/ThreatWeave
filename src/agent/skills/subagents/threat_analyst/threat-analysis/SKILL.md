@@ -66,6 +66,8 @@ description: >
 
 用户明确要求图表、图片、可视化或 HTML 文件时，生成 HTML 图表交付件。用户没有指定图表类型时，默认交付关系图：节点表示与问题相关的实体，边表示有 provenance 支持的关系；只保留回答当前问题所需的核心节点和边。
 
+除非明确要求“手写 HTML”“自定义 HTML 代码”或等价内容，否则严禁自行编写、拼接或输出 HTML 图表代码。普通的关系图、网络图、可视化和 HTML 图请求都必须使用 `generate_visualization`；不能因为图表服务不可用、Schema 不熟悉或需要调整样式而改为手写 HTML。
+
 用户明确指定趋势、分布、对比或其他图表目的时，选择与该目的匹配的图表类型，不强行改为关系图。无论图表类型如何，图表数据都必须来自本次已验证的查询结果。
 
 生成步骤如下：
@@ -74,6 +76,7 @@ description: >
 2. 按返回的 Schema 构造 `chart_config`，只传入本次查询已验证的数据，并请求 HTML 格式。
 3. 调用 `generate_visualization` 生成 HTML 内容。Charts MCP 不可用、Schema 不匹配或未返回可用 HTML 时，说明失败原因并结束；不要伪造图表或改用未经请求的交付形式。
 4. 使用 `write_deliverable` 写入 `text/html` 交付件，提供安全文件名和清晰标签。
+5. Charts MCP 不可用、Schema 不匹配或未返回可用 HTML 时，说明失败原因并结束；不要伪造图表、手写替代 HTML 或改用未经请求的交付形式。
 
 ### Markdown 报告交付件
 

@@ -22,12 +22,12 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from fastapi import HTTPException
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from agent.config import close_async_persistence, create_async_persistence
 from agent.backends.sandbox_manager import SandboxManager
 from agent.history_reader import ThreadHistoryReader
-from agent.schema import AsyncTaskBinding, UserGroup
+from agent.schema import AsyncTaskBinding, ThreatWeaveContext, UserGroup
 from services.deliverables import DeliverableRegistry
 
 
@@ -36,6 +36,42 @@ SESSION_NAMESPACE_PREFIX = ("sessions",)
 ASYNC_TASK_NAMESPACE_PREFIX = ("async_tasks",)
 SANDBOX_DELIVERABLE_NAMESPACE_PREFIX = ("sandbox_deliverables",)
 ASYNC_TASK_MESSAGE_PREFIX = "async-task-result:"
+ASYNC_TASK_CONTEXT_PREFIX = "async-task-context:"
+
+
+def _message_text(message: Any) -> str:
+    """将模型消息内容归一化为可交付的文本。"""
+    content = message.get("content", "") if isinstance(message, dict) else getattr(message, "content", "")
+    if isinstance(content, list):
+        return "".join(
+            str(item.get("text", "")) if isinstance(item, dict) else str(item)
+            for item in content
+        ).strip()
+    return str(content or "").strip()
+
+
+def _last_assistant_message(result: Any) -> Any | None:
+    """从主 Agent 本轮结果中取得最后一条可展示的助手消息。"""
+    messages = result.get("messages", []) if isinstance(result, dict) else getattr(result, "messages", [])
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "type", None)
+        if role in {"assistant", "ai"} and _message_text(message):
+            return message
+    return None
+
+
+def _async_result_context(content: str, task_id: str) -> str:
+    """构造仅供主 Agent 消费的异步子任务结果上下文。"""
+    return f"""这是系统内部转交的异步子 Agent 执行结果，不是新的用户消息。
+
+请根据当前会话中用户的原始请求，基于下方结果生成最终面向用户的回复。你必须自行组织结论、证据边界、限制和下一步，不要逐字照抄子 Agent 的原文，也不要提及本条内部指令。不要启动、查询、取消或监控任何异步任务；除非确有必要，不调用其他工具。
+
+异步任务 ID：{task_id}
+子 Agent 结果：
+{content or "（任务未返回文本；请仅说明已生成的交付件或可确认状态。）"}
+"""
 
 
 class AgentLoader:
@@ -416,11 +452,18 @@ class AgentLoader:
         # 必须经已编译图读取 DeltaChannel 状态，不能直接读取原始 checkpoint。
         state = await self.get_thread_state(binding.thread_id)
         messages = state.values.get("messages", [])
-        message_ids = (
-            message.get("id", "") if isinstance(message, dict) else getattr(message, "id", "")
+        has_delivered_result = any(
+            (
+                (message.get("id", "") if isinstance(message, dict) else getattr(message, "id", ""))
+                == message_id
+            )
+            or (
+                ((message.get("additional_kwargs", {}) if isinstance(message, dict)
+                  else getattr(message, "additional_kwargs", {})) or {}).get("async_task_id") == task_id
+            )
             for message in messages
         )
-        if message_id in message_ids:
+        if has_delivered_result:
             return True
         # aupdate_state 会改变 checkpoint 的后续调度，不能覆盖暂停中的工具执行。
         if state.next or state.interrupts:
@@ -431,8 +474,36 @@ class AgentLoader:
             username=binding.username,
             thread_id=binding.thread_id,
         )
+        config = self.create_config(
+            thread_id=binding.thread_id,
+            user_id=binding.user_id,
+            username=binding.username,
+        )
+        # 异步图不属于主图的一次工具调用，完成后必须让主 Agent 根据原始请求
+        # 重新组织结果。上下文消息带独立 ID，供历史和记忆中间件隐藏。
+        result = await agent.ainvoke(
+            {
+                "messages": [HumanMessage(
+                    id=f"{ASYNC_TASK_CONTEXT_PREFIX}{task_id}",
+                    content=_async_result_context(content, task_id),
+                    additional_kwargs={
+                        "internal_async_task_result": True,
+                        "async_task_id": task_id,
+                    },
+                )],
+            },
+            config=config,
+            context=ThreatWeaveContext(user_id=binding.user_id, username=binding.username),
+        )
+        final_message = _last_assistant_message(result)
+        if final_message is None:
+            raise RuntimeError("主 Agent 未生成异步任务的最终回复")
+        final_content = _message_text(final_message)
+        final_message_id = (
+            final_message.get("id") if isinstance(final_message, dict) else getattr(final_message, "id", None)
+        ) or message_id
         content_blocks: list[dict[str, str]] = [
-            {"type": "text", "text": content},
+            {"type": "text", "text": final_content},
         ]
         if artifact is not None:
             content_blocks.append(artifact)
@@ -440,15 +511,12 @@ class AgentLoader:
 
         # 使用固定消息 ID 配合 messages reducer，避免多次轮询或重试产生重复消息。
         await agent.aupdate_state(
-            self.create_config(
-                thread_id=binding.thread_id,
-                user_id=binding.user_id,
-                username=binding.username,
-            ),
+            config,
             {
                 "messages": [
                     AIMessage(
-                        id=message_id,
+                        # 覆盖刚由主图生成的最终消息，补入安全交付件引用和异步任务归属。
+                        id=str(final_message_id),
                         content=content_blocks,
                         additional_kwargs={"source": "main", "async_task_id": task_id},
                     )

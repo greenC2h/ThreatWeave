@@ -48,6 +48,7 @@ from agent.middlewares.memory_update import MemoryUpdateMiddleware, ensure_prefe
 from agent.middlewares.skill_management_visibility import (
     SkillManagementVisibilityMiddleware,
 )
+from agent.middlewares.async_task_visibility import AsyncTaskStatusVisibilityMiddleware
 from agent.middlewares.skills_sync import SandboxSkillsMiddleware
 
 
@@ -130,6 +131,9 @@ async def create_main_agent(
         async_subagents,
         sandbox_backend=sandbox_backend,
     )
+    async_task_status_tools = [
+        tool for tool in async_sandbox_tools if getattr(tool, "name", "") == "check_async_task"
+    ]
 
     # 技能管理操作必须使用稳定代理，才能在沙箱恢复后继续生效。
     # 每次管理前先同步本地变更，避免下载、分配或删除操作覆盖开发者尚未同步的技能文件。
@@ -184,6 +188,9 @@ async def create_main_agent(
             ),
             # 普通威胁情报对话隐藏技能维护工具；仅技能相关请求临时获得这些工具 schema。
             SkillManagementVisibilityMiddleware(skill_management_tools),
+            # 后台任务的自动轮询会让主 Agent重复转述同一分析结果；只有用户主动
+            # 询问状态或进度时，才让模型使用 check_async_task。
+            AsyncTaskStatusVisibilityMiddleware(async_task_status_tools),
             # after_agent 阶段先执行，用最终对话结果更新用户长期偏好和近期查询。
             MemoryUpdateMiddleware(SUMMARY_MODEL),
         ],

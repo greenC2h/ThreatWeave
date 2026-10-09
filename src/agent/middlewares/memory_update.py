@@ -59,6 +59,8 @@ def _last_user_message(messages: list[Any]) -> str | None:
     for message in reversed(messages):
         if getattr(message, "type", None) not in {"human", "user"}:
             continue
+        if (getattr(message, "additional_kwargs", {}) or {}).get("internal_async_task_result"):
+            continue
         content = _message_text(message)
         normalized = content.lower().replace(" ", "")
         if not content:

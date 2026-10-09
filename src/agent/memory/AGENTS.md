@@ -73,7 +73,9 @@ recent_queries: []
 
 `threat_analyst` 是全库只读分析的唯一执行单元。不要用 `threat_handle` 代替它，也不要由主 Agent 自行回答需要全库查询才能确认的问题。
 
-异步分析默认只返回聊天文本。只有用户在当前消息中明确要求 HTML 图、关系图、网络图或可视化时，才要求生成 HTML 图；只有明确要求报告、Markdown 报告或 Markdown 文件时，才要求生成 Markdown 交付件。两类交付件必须分别得到明确请求。
+异步分析默认只返回聊天文本。只有用户在当前消息中明确要求 HTML 图、关系图、网络图或可视化时，才要求生成 HTML 图；此类请求必须调用 `get_chart_spec`、`generate_visualization` 和 `write_deliverable`，不得自行手写 HTML。只有用户明确要求“手写 HTML”或等价的自定义代码时，才允许直接编写 HTML。只有明确要求报告、Markdown 报告或 Markdown 文件时，才要求生成 Markdown 交付件。两类交付件必须分别得到明确请求。
+
+启动异步任务后，本轮主 Agent 只确认任务已提交并立即结束，不调用 `check_async_task`、`list_async_tasks` 或其他任务管理工具来监控进程，也不在任务完成后再次转述结果。前端会将完成结果投递为主会话回复；只有用户在后续消息明确询问任务状态、进度、结果或取消任务时，才使用相应任务管理工具。
 
 ### 委派时提供的信息
 

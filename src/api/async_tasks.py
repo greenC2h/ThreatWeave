@@ -34,16 +34,6 @@ _RUN_LIMIT_ERROR_PATTERN = re.compile(
 _INTERNAL_ARTIFACT_LINE_PATTERN = re.compile(
     r"(?im)^[^\r\n]*(?:资源(?:\s|\*|_)*ID|静态(?:\s|\*|_)*HTML(?:\s|\*|_)*文件)[^\r\n]*(?:\r?\n|$)",
 )
-REPORT_REQUEST_PATTERN = re.compile(r"(?:报告|报表|分析报告|markdown)|\breport\b", re.IGNORECASE)
-REPORT_REQUEST_NEGATION_PATTERN = re.compile(
-    r"(?:不要|无需|不需要|不用|不生成|不提供|不输出)[^。！？\n]{0,12}"
-    r"(?:报告|报表|分析报告|markdown)|(?:no|without|不要)\s+\breport",
-    re.IGNORECASE,
-)
-GRAPH_REQUEST_PATTERN = re.compile(
-    r"(?:图谱|关系图|网络图|可视化|HTML\s*图|画(?:一张|个)?图)|\bgraph\b",
-    re.IGNORECASE,
-)
 DELIVERABLE_LINE_PATTERN = re.compile(
     r"(?im)^\s*DELIVERABLE\s*:\s*"
     r"(/deliverables/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:md|html|json))\s*\|\s*"
@@ -114,37 +104,6 @@ def _extract_task_output(values: Any) -> tuple[str, dict[str, str] | None]:
     return content, visualization
 
 
-def _task_requests_report(values: Any) -> bool:
-    """根据异步任务的原始用户请求判断是否应要求报告文件。"""
-    if not isinstance(values, dict) or not isinstance(values.get("messages"), list):
-        return False
-    for message in values["messages"]:
-        if _message_role(message) != "user":
-            continue
-        content = content_to_text(_get_attr(message, "content", ""))
-        if REPORT_REQUEST_NEGATION_PATTERN.search(content):
-            continue
-        if REPORT_REQUEST_PATTERN.search(content):
-            return True
-    return False
-
-
-def _requested_deliverable_mime_types(values: Any) -> set[str]:
-    """从任务原始请求提取明确交付类型，拒绝模型自行附加的文件。"""
-    if not isinstance(values, dict) or not isinstance(values.get("messages"), list):
-        return set()
-    requested: set[str] = set()
-    for message in values["messages"]:
-        if _message_role(message) != "user":
-            continue
-        content = content_to_text(_get_attr(message, "content", ""))
-        if GRAPH_REQUEST_PATTERN.search(content):
-            requested.add("text/html")
-        if not REPORT_REQUEST_NEGATION_PATTERN.search(content) and REPORT_REQUEST_PATTERN.search(content):
-            requested.add("text/markdown")
-    return requested
-
-
 def _extract_error(run: Any, state: Any) -> str | None:
     """从运行元数据或线程任务中提取可供用户查看的失败原因。"""
     metadata = _get_attr(run, "metadata", {}) or {}
@@ -186,19 +145,6 @@ def _extract_task_deliverables(values: Any, content: str) -> list[dict[str, str]
     return list({item["path"]: item for item in specifications}.values())
 
 
-def _keep_latest_requested_deliverables(
-    specifications: list[dict[str, str]],
-    requested_mime_types: set[str],
-) -> list[dict[str, str]]:
-    """每种用户明确请求的交付类型只保留本次任务最后生成的一个文件。"""
-    latest: dict[str, dict[str, str]] = {}
-    for specification in specifications:
-        mime_type = specification["mime_type"]
-        if mime_type in requested_mime_types:
-            latest[mime_type] = specification
-    return list(latest.values())
-
-
 def _sanitize_task_content(content: str) -> str:
     """移除系统登记报告和图表时不应展示的内部标识。"""
     content = DELIVERABLE_LINE_PATTERN.sub("", content)
@@ -236,19 +182,12 @@ async def get_async_task_status(
     state = None
     content = ""
     visualization = None
-    report_requested = False
     deliverable_specs: list[dict[str, str]] = []
     try:
         state = await client.threads.get_state(task_id)
         values = _get_attr(state, "values", {})
         content, visualization = _extract_task_output(values)
-        report_requested = _task_requests_report(values)
         deliverable_specs = _extract_task_deliverables(values, content)
-        requested_mime_types = _requested_deliverable_mime_types(values)
-        deliverable_specs = _keep_latest_requested_deliverables(
-            deliverable_specs,
-            requested_mime_types,
-        )
         content = _sanitize_task_content(content)
     except Exception as exc:
         # run 成功不代表已读到结果；失败必须可重试，不能写入占位成功消息。
@@ -291,20 +230,11 @@ async def get_async_task_status(
                 else f"后台任务未完成：{error}"
             )
         elif status == "success":
-            has_markdown_deliverable = any(
-                item["mime_type"] == "text/markdown" for item in deliverable_specs
-            )
-            has_html_deliverable = any(item["mime_type"] == "text/html" for item in deliverable_specs)
-            if report_requested and not has_markdown_deliverable:
-                status = "error"
-                error = "威胁分析未生成可下载报告，请重试。"
-                main_message = f"后台任务未完成：{error}"
-            elif visualization is None and not content and not deliverable_specs:
+            if visualization is None and not content and not deliverable_specs:
                 # 通用异步任务允许返回普通文本；只有完全没有正文和交付物时，
                 # 才能判定为远端成功状态下的空结果，避免伪造成功交付。
                 raise HTTPException(status_code=502, detail="异步任务未返回可交付结果，请稍后重试")
             else:
-                # 图表-only 请求不应因为没有报告而失败。
                 main_message = "图表已生成。" if visualization else content
         else:
             error = _extract_error(latest_run, state) or {
@@ -339,12 +269,18 @@ async def get_async_task_status(
                 detail="无法将异步任务结果写入主会话，请稍后重试",
             ) from exc
 
+    task_card_result = main_message if is_terminal else None
+    if is_terminal and status == "success" and delivered:
+        # 原始分析正文已作为内部上下文交给主 Agent；任务卡片只反映投递状态，
+        # 避免前端将子 Agent 原文与主 Agent 最终回复并排展示。
+        task_card_result = "主 Agent 已完成结果整理。"
+
     return AsyncTaskStatusResponse(
         task_id=task_id,
         status=status,
         done=is_terminal,
         delivered=delivered,
-        result=main_message if is_terminal else None,
+        result=task_card_result,
         visualization=visualization if is_terminal else None,
         deliverables=[
             {

@@ -23,6 +23,7 @@ from api.async_tasks import (
 from agent.backends.sandbox_proxy import SandboxBackendProxy
 from agent.memory.prompts import system_prompt
 from agent.subagents.async_registry import get_async_subagent_instructions
+from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from langgraph_sdk.runtime import _ExecutionRuntime, _ReadRuntime
 
@@ -124,8 +125,28 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, "success")
         self.assertEqual(response.deliverables, [])
-        self.assertEqual(response.result, "图表已生成。")
+        self.assertEqual(response.result, "主 Agent 已完成结果整理。")
         self.assertEqual(publish.await_args.kwargs["deliverables"], [])
+
+    async def test_successful_delivery_does_not_expose_raw_subagent_text_in_task_card(self) -> None:
+        """主 Agent 已接管结果时，状态接口不能再返回子 Agent 原文。"""
+        client = SimpleNamespace(
+            runs=SimpleNamespace(list=AsyncMock(return_value=[{"status": "success"}])),
+            threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
+                "messages": [
+                    {"role": "human", "content": "查询库内文章"},
+                    {"role": "assistant", "content": "子 Agent 的原始调查正文。"},
+                ],
+            }))),
+        )
+        with (
+            patch("api.async_tasks.get_client", return_value=client),
+            patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)) as publish,
+        ):
+            response = await get_async_task_status("task-1", user_id="u1")
+
+        self.assertEqual(response.result, "主 Agent 已完成结果整理。")
+        self.assertEqual(publish.await_args.kwargs["content"], "子 Agent 的原始调查正文。")
 
     async def test_failed_legacy_update_keeps_prior_successful_deliverables(self) -> None:
         """旧 update_async_task 追加失败运行时，不能覆盖同线程已成功的图表。"""
@@ -168,14 +189,14 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.run_id, "original-success")
         self.assertEqual([item.filename for item in response.deliverables], ["threat-graph.html"])
 
-    async def test_chart_only_task_discards_unrequested_markdown_deliverable(self) -> None:
-        """模型误写报告时，明确的仅图请求也不能向用户登记该报告。"""
+    async def test_registers_all_actual_deliverables_without_keyword_inference(self) -> None:
+        """交付件以子 Agent 实际写入结果为准，不按用户文本关键词筛选。"""
         markdown_spec = {
             "type": "deliverable_spec",
             "path": "/deliverables/unrequested-report.md",
             "filename": "unrequested-report.md",
             "mime_type": "text/markdown",
-            "label": "不应交付的报告",
+            "label": "分析报告",
         }
         html_spec = {
             "type": "deliverable_spec",
@@ -214,13 +235,37 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await get_async_task_status("task-1", user_id="u1")
 
-        self.assertEqual([item.filename for item in response.deliverables], ["requested-graph.html"])
+        self.assertEqual(
+            [item.filename for item in response.deliverables],
+            ["unrequested-report.md", "requested-graph.html"],
+        )
         self.assertEqual(
             [item["filename"] for item in register_deliverables.await_args.args[1]],
-            ["requested-graph.html"],
+            ["unrequested-report.md", "requested-graph.html"],
         )
 
-    async def test_chart_only_task_keeps_only_latest_html_deliverable(self) -> None:
+    async def test_plain_text_task_with_report_negation_remains_successful(self) -> None:
+        """任务约束提及未要求报告时，纯文本结果不能被改写为失败。"""
+        client = SimpleNamespace(
+            runs=SimpleNamespace(list=AsyncMock(return_value=[{"status": "success"}])),
+            threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
+                "messages": [
+                    {"role": "human", "content": "没有要求报告，只返回库内文章列表。"},
+                    {"role": "assistant", "content": "库内共有 4 篇文章。"},
+                ],
+            }))),
+        )
+        with (
+            patch("api.async_tasks.get_client", return_value=client),
+            patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)),
+        ):
+            response = await get_async_task_status("task-1", user_id="u1")
+
+        self.assertEqual(response.status, "success")
+        self.assertIsNone(response.error)
+
+    async def test_registers_repeated_deliverables_written_by_subagent(self) -> None:
+        """同类型文件也应按子 Agent 实际写入结果完整登记。"""
         first_html = {
             "type": "deliverable_spec",
             "path": "/deliverables/old-graph.html",
@@ -251,25 +296,36 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
             patch("api.async_tasks.get_client", return_value=client),
             patch(
                 "api.async_tasks.agent_loader.register_sandbox_deliverables",
-                new=AsyncMock(return_value=[{
-                    "artifact_id": "e" * 32,
-                    "filename": "latest-graph.html",
-                    "mime_type": "text/html",
-                    "label": "最新图谱",
-                }]),
+                new=AsyncMock(return_value=[
+                    {
+                        "artifact_id": "d" * 32,
+                        "filename": "old-graph.html",
+                        "mime_type": "text/html",
+                        "label": "旧图谱",
+                    },
+                    {
+                        "artifact_id": "e" * 32,
+                        "filename": "latest-graph.html",
+                        "mime_type": "text/html",
+                        "label": "最新图谱",
+                    },
+                ]),
             ) as register_deliverables,
             patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)),
         ):
             response = await get_async_task_status("task-1", user_id="u1")
 
-        self.assertEqual([item.filename for item in response.deliverables], ["latest-graph.html"])
+        self.assertEqual(
+            [item.filename for item in response.deliverables],
+            ["old-graph.html", "latest-graph.html"],
+        )
         self.assertEqual(
             [item["filename"] for item in register_deliverables.await_args.args[1]],
-            ["latest-graph.html"],
+            ["old-graph.html", "latest-graph.html"],
         )
 
-    async def test_report_request_without_report_path_remains_an_error(self) -> None:
-        """明确要求报告但子 Agent 未写入文件时，不能伪装成成功。"""
+    async def test_report_request_without_file_keeps_successful_text_result(self) -> None:
+        """是否生成文件由子 Agent 决定，成功文本结果不因报告关键词失败。"""
         client = SimpleNamespace(
             runs=SimpleNamespace(list=AsyncMock(return_value=[{"status": "success"}])),
             threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
@@ -285,12 +341,12 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await get_async_task_status("task-1", user_id="u1")
 
-        self.assertEqual(response.status, "error")
-        self.assertIn("未生成可下载报告", response.error)
-        self.assertIn("后台任务未完成", publish.await_args.kwargs["content"])
+        self.assertEqual(response.status, "success")
+        self.assertIsNone(response.error)
+        self.assertEqual(publish.await_args.kwargs["content"], "分析完成，但未写入报告")
 
     async def test_missing_requested_report_does_not_create_api_fallback(self) -> None:
-        """C 未写入请求的报告时，应明确失败而非由 API 代写分析交付件。"""
+        """API 不代写交付件，子 Agent 的成功文本结果应原样投递。"""
         client = SimpleNamespace(
             runs=SimpleNamespace(list=AsyncMock(return_value=[{"status": "success"}])),
             threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
@@ -309,10 +365,10 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await get_async_task_status("task-1", user_id="u1")
 
-        self.assertEqual(response.status, "error")
-        self.assertIn("未生成可下载报告", response.error)
+        self.assertEqual(response.status, "success")
+        self.assertIsNone(response.error)
         self.assertEqual(response.deliverables, [])
-        self.assertIn("后台任务未完成", publish.await_args.kwargs["content"])
+        self.assertEqual(publish.await_args.kwargs["content"], "分析完成，但未写入文件")
 
     async def test_returns_pending_when_remote_thread_has_no_runs(self) -> None:
         """尚未物化运行记录时，前端应继续轮询而不是视为失败。"""
@@ -389,16 +445,6 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         deliverables = _extract_task_deliverables(values, "DELIVERABLE: /tmp/invalid.md | text/markdown | 无效")
         self.assertEqual(deliverables[0]["path"], "/deliverables/report.md")
 
-    def test_report_negation_does_not_turn_chart_only_request_into_report_request(self) -> None:
-        from api.async_tasks import _task_requests_report
-
-        self.assertFalse(_task_requests_report({
-            "messages": [{"role": "human", "content": "只画图，不要生成报告"}],
-        }))
-        self.assertTrue(_task_requests_report({
-            "messages": [{"role": "human", "content": "生成采购分析报告"}],
-        }))
-
 class AsyncTaskDeliveryTests(unittest.IsolatedAsyncioTestCase):
     """验证 AgentLoader 向主 checkpoint 投递异步结果的边界。"""
 
@@ -412,7 +458,12 @@ class AsyncTaskDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
         )
-        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        agent = SimpleNamespace(
+            ainvoke=AsyncMock(return_value={
+                "messages": [AIMessage(id="main-final", content="主 Agent 的最终回复。")],
+            }),
+            aupdate_state=AsyncMock(),
+        )
         loader = AgentLoader()
         loader._initialized = True
         loader._store = store
@@ -446,10 +497,54 @@ class AsyncTaskDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(delivered_again)
         self.assertEqual(agent.aupdate_state.await_count, 1)
         message = agent.aupdate_state.await_args.args[1]["messages"][0]
-        self.assertEqual(message.id, f"async-task-result:{task_id}")
+        self.assertEqual(message.id, "main-final")
         self.assertEqual(message.additional_kwargs["source"], "main")
         self.assertEqual(message.content[1]["artifact_id"], "a" * 32)
         self.assertEqual(message.content[2]["artifact_id"], "b" * 32)
+
+    async def test_async_result_is_rewritten_by_main_agent_before_delivery(self) -> None:
+        """异步子 Agent 原文必须由主 Agent 整理后才能进入主会话。"""
+        task_id = "12fd2b03-f2c1-4b80-a8ca-9cb91bc43ccd"
+        store = SimpleNamespace(
+            aget=AsyncMock(
+                return_value=SimpleNamespace(
+                    value={"user_id": "u1", "username": "张三", "thread_id": "thread-1"}
+                )
+            )
+        )
+        agent = SimpleNamespace(
+            ainvoke=AsyncMock(return_value={
+                "messages": [
+                    AIMessage(id="main-final", content="这是主 Agent 整理后的结论。"),
+                ]
+            }),
+            aupdate_state=AsyncMock(),
+        )
+        loader = AgentLoader()
+        loader._initialized = True
+        loader._store = store
+        loader.get_thread_state = AsyncMock(return_value=SimpleNamespace(
+            values={"messages": []}, next=(), interrupts=(),
+        ))
+        loader.get_session = AsyncMock(return_value={"thread_id": "thread-1"})
+        loader.get_agent_for_user = AsyncMock(return_value=agent)
+        loader.save_session = AsyncMock()
+
+        delivered = await loader.publish_async_task_result(
+            task_id,
+            content="子 Agent 的原始分析结果。",
+            artifact=None,
+            deliverables=[],
+        )
+
+        self.assertTrue(delivered)
+        agent.ainvoke.assert_awaited_once()
+        internal_message = agent.ainvoke.await_args.args[0]["messages"][0]
+        self.assertEqual(internal_message.additional_kwargs["async_task_id"], task_id)
+        self.assertIn("子 Agent 的原始分析结果。", internal_message.content)
+        delivered_message = agent.aupdate_state.await_args.args[1]["messages"][0]
+        self.assertEqual(delivered_message.id, "main-final")
+        self.assertEqual(delivered_message.content[0]["text"], "这是主 Agent 整理后的结论。")
 
 
 class NonStreamingAsyncTaskBindingTests(unittest.IsolatedAsyncioTestCase):

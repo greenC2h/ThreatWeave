@@ -111,10 +111,15 @@ def serialize_messages(messages: list[Any], user_id: str = "u1") -> list[Message
     tool_messages: dict[str, Message] = {}
     now = datetime.now(timezone.utc)
     completed_tasks = {
+        str((_message_value(message, "additional_kwargs", {}) or {}).get("async_task_id"))
+        for message in messages
+        if (_message_value(message, "additional_kwargs", {}) or {}).get("async_task_id")
+    }
+    completed_tasks.update(
         str(_message_value(message, "id", "")).removeprefix("async-task-result:")
         for message in messages
         if str(_message_value(message, "id", "")).startswith("async-task-result:")
-    }
+    )
 
     for index, message in enumerate(messages):
         role = _message_role(message)
@@ -208,6 +213,8 @@ def serialize_messages(messages: list[Any], user_id: str = "u1") -> list[Message
                     tool_message.visualization = Visualization(**visualization) if visualization else None
         elif role == "user":
             additional_kwargs = _message_value(message, "additional_kwargs", {}) or {}
+            if additional_kwargs.get("internal_async_task_result"):
+                continue
             serialized.append(Message(id=f"message-{index}", role="user", content=content, created_at=now))
     return serialized
 
