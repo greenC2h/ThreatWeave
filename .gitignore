@@ -42,6 +42,7 @@ runtime/
 *.db
 
 # 编辑器和操作系统文件
+/AGENTS.md
 .claude/
 .idea/
 .vscode/
