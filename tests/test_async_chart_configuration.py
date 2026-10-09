@@ -32,22 +32,24 @@ def _configured_tool(name: str):
 class AsyncSubagentConfigurationTests(unittest.TestCase):
     """确保高级分析任务只使用新的受控查询接口。"""
 
-    def test_main_prompt_routes_article_handling_to_threat_handle(self) -> None:
+    def test_main_prompt_requires_sandbox_guidance_and_preferences(self) -> None:
         instructions = f"{system_prompt}\n{get_async_subagent_instructions()}"
 
-        self.assertIn("`threat_handle`", instructions)
-        self.assertIn("`run_threat_pipeline`", instructions)
-        self.assertNotIn("intelligence_workflow_orchestrator", instructions)
-        self.assertNotIn("format_only", instructions)
-        self.assertNotIn("extract_preview", instructions)
+        self.assertIn("`/AGENTS.md`", instructions)
+        self.assertIn("`/memories/{user_id}/preferences.md`", instructions)
+        self.assertIn("沙箱中的虚拟路径", instructions)
+        self.assertIn("compact_conversation", instructions)
 
-    def test_main_prompt_routes_global_search_to_threat_analyst(self) -> None:
-        instructions = f"{system_prompt}\n{get_async_subagent_instructions()}"
+    def test_agents_rules_define_task_delegation_boundaries(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        instructions = (
+            project_root / "src" / "agent" / "memory" / "AGENTS.md"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("全库查询、文章列表、实体关系统计和图谱查询必须使用 `threat_analyst`", instructions)
-        self.assertIn("这里仅限用户明确指定某一篇文章并要求其中间产物 Markdown", instructions)
-        self.assertIn("用户明确指定一篇文章（标题、URL 或唯一文章标识）", instructions)
-        self.assertIn("不得使用 `start_async_task` 或 `threat_analyst`", instructions)
+        self.assertIn("### 主 Agent 直接完成", instructions)
+        self.assertIn("### 委派 `threat_handle`", instructions)
+        self.assertIn("### 委派 `threat_analyst`", instructions)
+        self.assertIn("用户要求查询整个情报库", instructions)
 
     def test_registers_only_the_threat_analyst_async_graph(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -98,8 +100,11 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
 
         self.assertIn("describe_read_model", config)
         self.assertIn("execute_read_query", config)
+        self.assertIn("get_chart_spec", config)
+        self.assertIn("generate_visualization", config)
         self.assertIn("write_deliverable", config)
         self.assertNotIn("threat_graph_query", config)
+        self.assertNotIn("generate_network_graph_html", config)
 
     def test_threat_analyst_skill_has_valid_metadata_and_sql_guidance(self) -> None:
         skill_path = (
@@ -114,7 +119,10 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("Markdown", metadata["description"])
         self.assertIn("describe_read_model", text)
         self.assertIn("execute_read_query", text)
+        self.assertIn("get_chart_spec", text)
+        self.assertIn("generate_visualization", text)
         self.assertNotIn("threat_graph_query", text)
+        self.assertNotIn("generate_network_graph_html", text)
 
     def test_compiled_graph_receives_only_read_tools(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -143,7 +151,8 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
                 "web_search",
                 "describe_read_model",
                 "execute_read_query",
-                "generate_network_graph_html",
+                "get_chart_spec",
+                "generate_visualization",
                 "write_deliverable",
             ],
         )

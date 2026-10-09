@@ -1,153 +1,298 @@
-"""根据 ThreatWeave 查询结果构建自包含的 HTML 图谱内容。"""
+"""将 Charts MCP 的动态生成能力适配为 ThreatWeave 可调用工具。"""
 
 from __future__ import annotations
 
 import json
 import os
-from html import escape
-from math import cos, pi, sin
 import re
 from typing import Any
 
-from langchain_mcp_adapters.client import MultiServerMCPClient
+import httpx
 from langchain_core.tools import tool
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 
-def _extract_chart_html(result: Any) -> str | None:
-    """从 Modelscope Charts MCP 的内容块中取出完整 HTML 文档。"""
-    if not isinstance(result, list):
+_HTML_PREFIXES = ("<!doctype html", "<html", "<svg")
+_HTML_URL_PATTERN = re.compile(r"https?://\S+\.html(?:[?#].*)?$", re.IGNORECASE)
+
+
+class ChartsMcpUnavailableError(RuntimeError):
+    """表示 Charts MCP 当前不能提供工具发现或生成服务。"""
+
+
+def _chart_type_from_tool_name(tool_name: str) -> str | None:
+    """将 Charts MCP 的 ``generate_*`` 工具名转换为稳定类型名称。"""
+    if not tool_name.startswith("generate_"):
         return None
-    for block in result:
-        if isinstance(block, dict):
-            content = block.get("text")
-        else:
-            content = getattr(block, "text", None)
-        if isinstance(content, str) and "<html" in content.lower():
-            return content
+    chart_type = tool_name.removeprefix("generate_")
+    if chart_type.endswith("_chart"):
+        chart_type = chart_type.removesuffix("_chart")
+    return chart_type or None
+
+
+def _schema_from_tool(chart_tool: Any) -> dict[str, Any]:
+    """读取 StructuredTool 的 JSON Schema，兼容 Pydantic v1/v2。"""
+    schema_model = getattr(chart_tool, "args_schema", None)
+    if schema_model is None:
+        return {}
+    if isinstance(schema_model, dict):
+        return schema_model
+    model_json_schema = getattr(schema_model, "model_json_schema", None)
+    if callable(model_json_schema):
+        return model_json_schema()
+    schema = getattr(schema_model, "schema", None)
+    return schema() if callable(schema) else {}
+
+
+def _resolve_schema(schema: dict[str, Any], root_schema: dict[str, Any]) -> dict[str, Any]:
+    """解析构建最小示例所需的本地 JSON Schema 引用。"""
+    reference = schema.get("$ref")
+    if reference and reference.startswith("#/"):
+        resolved: Any = root_schema
+        for part in reference[2:].split("/"):
+            resolved = resolved.get(part, {}) if isinstance(resolved, dict) else {}
+        return resolved if isinstance(resolved, dict) else {}
+    for key in ("anyOf", "oneOf"):
+        alternatives = schema.get(key)
+        if isinstance(alternatives, list):
+            for alternative in alternatives:
+                if isinstance(alternative, dict) and alternative.get("type") != "null":
+                    return _resolve_schema(alternative, root_schema)
+    return schema
+
+
+def _example_value(
+    schema: dict[str, Any],
+    root_schema: dict[str, Any],
+    property_name: str = "",
+) -> Any:
+    """根据 MCP Schema 构建只包含必要字段的最小调用示例。"""
+    schema = _resolve_schema(schema, root_schema)
+    if "default" in schema:
+        return schema["default"]
+    if "const" in schema:
+        return schema["const"]
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        return enum[0]
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = next((item for item in schema_type if item != "null"), "string")
+    if schema_type == "object" or "properties" in schema:
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            return {}
+        required = schema.get("required") or list(properties)[:1]
+        return {
+            name: _example_value(properties[name], root_schema, name)
+            for name in required
+            if name in properties and isinstance(properties[name], dict)
+        }
+    if schema_type == "array":
+        items = schema.get("items")
+        return [_example_value(items, root_schema, property_name)] if isinstance(items, dict) else []
+    if schema_type in {"integer", "number"}:
+        return 1
+    if schema_type == "boolean":
+        return False
+    if schema_type == "string":
+        return "html" if property_name.lower() == "format" else "示例"
     return None
 
 
-def _render_static_network_graph(title: str, nodes: list[str], edges: list[dict[str, str]]) -> str:
-    """生成无需 CDN 或脚本的 SVG，保证已返回图表在受限预览页中仍可见。"""
-    unique_nodes = list(dict.fromkeys(node for node in nodes if node))
-    width, height = 1120, 720
-    center_x, center_y = width / 2, height / 2
-    radius = min(width, height) * 0.31
-    positions = {
-        node: (
-            center_x + radius * cos((index / max(len(unique_nodes), 1)) * 2 * pi - pi / 2),
-            center_y + radius * sin((index / max(len(unique_nodes), 1)) * 2 * pi - pi / 2),
-        )
-        for index, node in enumerate(unique_nodes)
-    }
-    lines = []
-    for edge in edges:
-        source, target = edge.get("source", ""), edge.get("target", "")
-        if source in positions and target in positions:
-            x1, y1 = positions[source]
-            x2, y2 = positions[target]
-            lines.append(
-                f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" />'
-            )
-    node_elements = []
-    for node, (x, y) in positions.items():
-        label = escape(node)
-        node_elements.append(
-            f'<g><circle cx="{x:.1f}" cy="{y:.1f}" r="25" />'
-            f'<text x="{x:.1f}" y="{y + 45:.1f}">{label}</text></g>'
-        )
-    return f"""<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{escape(title)}</title>
-    <style>
-      html, body {{ margin: 0; min-height: 100%; background: #f8fafc; color: #172033; font-family: Arial, sans-serif; }}
-      h1 {{ margin: 24px auto 8px; width: min(1120px, calc(100% - 48px)); font-size: 24px; }}
-      svg {{ display: block; width: min(1120px, calc(100% - 48px)); height: auto; margin: 0 auto 24px; background: #fff; border: 1px solid #d6dde8; }}
-      line {{ stroke: #92a2b8; stroke-width: 2; }}
-      circle {{ fill: #d8f0ea; stroke: #087f6b; stroke-width: 2; }}
-      text {{ fill: #172033; font-size: 14px; text-anchor: middle; }}
-    </style>
-  </head>
-  <body>
-    <h1>{escape(title)}</h1>
-    <svg viewBox="0 0 {width} {height}" role="img" aria-label="{escape(title)}">
-      {''.join(lines)}
-      {''.join(node_elements)}
-    </svg>
-  </body>
-</html>"""
+def _compact_description(description: str) -> str:
+    """将底层工具说明压缩为图表目录的单行摘要。"""
+    normalized = " ".join(str(description or "").split())
+    first_sentence = re.split(r"(?<=[.!?])\s+", normalized, maxsplit=1)[0]
+    return first_sentence[:180] or "生成该类型的可视化图表"
 
 
-def _ensure_renderable_chart_html(
-    document: str,
-    title: str,
-    nodes: list[str],
-    edges: list[dict[str, str]],
-) -> str:
-    """拒绝依赖外部脚本的图表页，防止 CSP 或离线环境只显示空容器。"""
-    has_external_script = bool(re.search(r"<script[^>]+\\bsrc=", document, re.IGNORECASE))
-    has_static_graph = bool(re.search(r"<(?:svg|canvas)\\b", document, re.IGNORECASE))
-    if has_external_script or not has_static_graph:
-        return _render_static_network_graph(title, nodes, edges)
-    return document
+def _build_chart_tool_map(chart_mcp_tools: list[Any]) -> dict[str, Any]:
+    """建立 ``chart_type`` 到 Charts MCP 生成工具的映射。"""
+    chart_tool_map: dict[str, Any] = {}
+    for chart_tool in chart_mcp_tools:
+        chart_type = _chart_type_from_tool_name(str(getattr(chart_tool, "name", "")))
+        if chart_type is None:
+            continue
+        if chart_type in chart_tool_map:
+            raise ValueError(f"Charts MCP 图表类型重复: {chart_type}")
+        chart_tool_map[chart_type] = chart_tool
+    if not chart_tool_map:
+        raise ValueError("Charts MCP 未提供 generate_* 工具")
+    return chart_tool_map
 
 
-@tool
-async def generate_network_graph_html(
-    title: str,
-    nodes: list[str],
-    edges: list[dict[str, str]],
-) -> str:
-    """调用 Charts MCP 生成网络图 HTML；失败时返回明确状态而不执行本地回退。"""
+async def _discover_chart_tools() -> dict[str, Any]:
+    """按需发现 Charts MCP 工具，避免服务启动依赖可选图表服务。"""
     chart_url = os.getenv("MODELSCOPE_CHARTS_MCP_URL", "").strip()
     if not chart_url:
-        return json.dumps({
-            "status": "unavailable",
-            "message": "Charts MCP 未配置，无法生成 HTML 图。",
-        }, ensure_ascii=False)
-
+        raise ChartsMcpUnavailableError("Charts MCP 未配置")
     try:
         client = MultiServerMCPClient({
             "charts-mcp": {"url": chart_url, "transport": "streamable_http"},
         })
-        chart_tools = await client.get_tools(server_name="charts-mcp")
-        chart_tool = next(tool for tool in chart_tools if tool.name == "generate_network_graph")
-        result = await chart_tool.ainvoke({
-            "data": {
-                "nodes": [{"name": node} for node in dict.fromkeys(nodes) if node],
-                "edges": [
-                    {
-                        "source": edge.get("source", ""),
-                        "target": edge.get("target", ""),
-                        "name": edge.get("name", ""),
-                    }
-                    for edge in edges
-                    if edge.get("source") and edge.get("target")
-                ],
-            },
-            "format": "html",
-        })
-    except Exception:
-        return json.dumps({
-            "status": "unavailable",
-            "message": "Charts MCP 当前不可用，无法生成 HTML 图。",
-        }, ensure_ascii=False)
+        return _build_chart_tool_map(await client.get_tools(server_name="charts-mcp"))
+    except ChartsMcpUnavailableError:
+        raise
+    except Exception as exc:
+        raise ChartsMcpUnavailableError("Charts MCP 当前不可用") from exc
 
-    document = _extract_chart_html(result)
-    if document is None:
-        return json.dumps({
-            "status": "unavailable",
-            "message": "Charts MCP 未返回 HTML，无法生成图。",
-        }, ensure_ascii=False)
-    document = _ensure_renderable_chart_html(document, title, nodes, edges)
-    return json.dumps({
-        "type": "deliverable_content",
-        "mime_type": "text/html",
-        "suggested_filename": "threat-network.html",
-        "title": title,
-        "content": document,
-        "message": "Charts MCP 网络图 HTML 已生成并通过离线可见性校验。请在用户要求 HTML 图时用 write_deliverable 保存。",
-    }, ensure_ascii=False)
+
+def _request_html_config(chart_config: dict[str, Any]) -> dict[str, Any]:
+    """复制图表参数并请求 Charts MCP 返回 HTML。"""
+    config = dict(chart_config)
+    input_config = config.get("input")
+    if isinstance(input_config, dict):
+        config["input"] = {**input_config, "format": "html"}
+    else:
+        config["format"] = "html"
+    return config
+
+
+async def _download_html(url: str) -> str:
+    """下载 Charts MCP 返回的临时 HTML，避免把远程 URL 交给前端。"""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+    return response.text
+
+
+def _strip_code_fence(value: str) -> str:
+    """去除 MCP 文本结果可能附带的 Markdown HTML 代码围栏。"""
+    match = re.fullmatch(r"```(?:html)?\s*(.*?)```", value.strip(), re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else value.strip()
+
+
+def _find_html_payload(value: Any, depth: int = 0) -> tuple[str, str] | None:
+    """从 MCP 结果递归提取 HTML 正文或 HTML URL。"""
+    if depth > 6:
+        return None
+    if isinstance(value, tuple) and value:
+        return _find_html_payload(value[0], depth + 1)
+    if isinstance(value, list):
+        for item in value:
+            payload = _find_html_payload(item, depth + 1)
+            if payload:
+                return payload
+        return None
+    if isinstance(value, dict):
+        for key in ("text", "content", "resource", "result", "resultObj", "html", "uri"):
+            if key in value:
+                payload = _find_html_payload(value[key], depth + 1)
+                if payload:
+                    return payload
+        return None
+    if not isinstance(value, str):
+        return None
+
+    text = _strip_code_fence(value)
+    if text.startswith(("{", "[")):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if parsed is not None:
+            return _find_html_payload(parsed, depth + 1)
+    if text.lower().startswith(_HTML_PREFIXES):
+        return "html", text
+    if _HTML_URL_PATTERN.fullmatch(text):
+        return "html-url", text
+    return None
+
+
+async def _html_from_result(result: Any) -> str:
+    """将 Charts MCP 返回值统一为可写入交付件的 HTML 文本。"""
+    payload = _find_html_payload(result)
+    if payload is None:
+        raise RuntimeError("Charts MCP 未返回 HTML 或 HTML URL")
+    payload_type, payload_value = payload
+    return await _download_html(payload_value) if payload_type == "html-url" else payload_value
+
+
+def create_chart_tools() -> list[Any]:
+    """创建按需发现 Charts MCP 能力的通用可视化工具。"""
+    chart_tool_map: dict[str, Any] | None = None
+
+    async def get_chart_tool_map() -> dict[str, Any]:
+        nonlocal chart_tool_map
+        if chart_tool_map is None:
+            chart_tool_map = await _discover_chart_tools()
+        return chart_tool_map
+
+    @tool
+    async def get_chart_spec(chart_type: str = "") -> str:
+        """列出图表类型，或返回指定类型的真实 MCP Schema 和最小调用示例。"""
+        try:
+            available_tools = await get_chart_tool_map()
+        except ChartsMcpUnavailableError as exc:
+            return json.dumps({"status": "unavailable", "message": str(exc)}, ensure_ascii=False)
+
+        if not chart_type:
+            return json.dumps(
+                {
+                    "available_types": [
+                        {
+                            "chart_type": name,
+                            "description": _compact_description(getattr(chart_tool, "description", "")),
+                        }
+                        for name, chart_tool in sorted(available_tools.items())
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
+        chart_tool = available_tools.get(chart_type)
+        if chart_tool is None:
+            return json.dumps(
+                {"error": f"未知图表类型: {chart_type}", "available_types": sorted(available_tools)},
+                ensure_ascii=False,
+            )
+        schema = _schema_from_tool(chart_tool)
+        return json.dumps(
+            {
+                "chart_type": chart_type,
+                "tool_name": chart_tool.name,
+                "description": getattr(chart_tool, "description", ""),
+                "input_schema": schema,
+                "minimum_example": _example_value(schema, schema),
+            },
+            ensure_ascii=False,
+        )
+
+    @tool
+    async def generate_visualization(chart_type: str, chart_config: dict[str, Any]) -> str:
+        """按 Charts MCP 的真实 Schema 生成 HTML 可视化交付内容。"""
+        try:
+            available_tools = await get_chart_tool_map()
+        except ChartsMcpUnavailableError as exc:
+            return json.dumps({"status": "unavailable", "message": str(exc)}, ensure_ascii=False)
+
+        chart_tool = available_tools.get(chart_type)
+        if chart_tool is None:
+            return json.dumps(
+                {"error": f"未知图表类型: {chart_type}", "available_types": sorted(available_tools)},
+                ensure_ascii=False,
+            )
+        try:
+            html = await _html_from_result(
+                await chart_tool.ainvoke(_request_html_config(chart_config)),
+            )
+        except Exception:
+            return json.dumps(
+                {"status": "unavailable", "message": "Charts MCP 未能生成可用 HTML 图表。"},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "type": "deliverable_content",
+                "mime_type": "text/html",
+                "suggested_filename": f"threatweave-{chart_type}.html",
+                "chart_type": chart_type,
+                "content": html,
+                "message": "Charts MCP 已生成 HTML 图表。请在用户明确要求图表时用 write_deliverable 保存。",
+            },
+            ensure_ascii=False,
+        )
+
+    return [get_chart_spec, generate_visualization]

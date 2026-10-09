@@ -4,7 +4,8 @@ tools:
   - web_search
   - describe_read_model
   - execute_read_query
-  - generate_network_graph_html
+  - get_chart_spec
+  - generate_visualization
   - write_deliverable
 skills:
   - /skills/subagents/threat_analyst/
