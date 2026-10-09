@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from api.agent_loader import AgentLoader
 from agent.schema import AsyncTaskBinding
 from api.async_tasks import (
-    _extract_deliverables,
     _extract_task_deliverables,
     _sanitize_task_content,
     extract_async_task_id,
@@ -37,9 +36,6 @@ def _configured_tool(name: str):
 
     test_tool.__name__ = name
     return tool(test_tool)
-
-
-DELIVERABLE_LINE = "DELIVERABLE: /deliverables/threat-report.md | text/markdown | 下载威胁分析报告"
 
 
 class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
@@ -68,10 +64,22 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
                         values={
                             "messages": [
                                 {"role": "human", "content": "生成采购分析报告和趋势图"},
+                                {"type": "tool", "name": "write_deliverable", "content": json.dumps({
+                                    "type": "deliverable_spec",
+                                    "path": "/deliverables/threat-report.md",
+                                    "filename": "threat-report.md",
+                                    "mime_type": "text/markdown",
+                                    "label": "下载威胁分析报告",
+                                })},
+                                {"type": "tool", "name": "write_deliverable", "content": json.dumps({
+                                    "type": "deliverable_spec",
+                                    "path": "/deliverables/threat-graph.html",
+                                    "filename": "threat-graph.html",
+                                    "mime_type": "text/html",
+                                    "label": "打开威胁关系图",
+                                })},
                                 {"role": "assistant", "content": (
-                                    "分析完成。\n"
-                                    "DELIVERABLE: /deliverables/threat-report.md | text/markdown | 下载威胁分析报告\n"
-                                    "DELIVERABLE: /deliverables/threat-graph.html | text/html | 打开威胁关系图"
+                                    "分析完成。"
                                 )},
                             ]
                         }
@@ -147,47 +155,6 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.result, "主 Agent 已完成结果整理。")
         self.assertEqual(publish.await_args.kwargs["content"], "子 Agent 的原始调查正文。")
-
-    async def test_failed_legacy_update_keeps_prior_successful_deliverables(self) -> None:
-        """旧 update_async_task 追加失败运行时，不能覆盖同线程已成功的图表。"""
-        html_spec = {
-            "type": "deliverable_spec",
-            "path": "/deliverables/threat-graph.html",
-            "filename": "threat-graph.html",
-            "mime_type": "text/html",
-            "label": "打开关系图",
-        }
-        client = SimpleNamespace(
-            runs=SimpleNamespace(list=AsyncMock(return_value=[
-                {"status": "error", "run_id": "update-failed"},
-                {"status": "success", "run_id": "original-success"},
-            ])),
-            threads=SimpleNamespace(get_state=AsyncMock(return_value=SimpleNamespace(values={
-                "messages": [
-                    {"role": "human", "content": "只生成 HTML 图"},
-                    {"type": "tool", "name": "write_deliverable", "content": json.dumps(html_spec)},
-                    {"role": "assistant", "content": "图表已生成。"},
-                ],
-            }))),
-        )
-        with (
-            patch("api.async_tasks.get_client", return_value=client),
-            patch(
-                "api.async_tasks.agent_loader.register_sandbox_deliverables",
-                new=AsyncMock(return_value=[{
-                    "artifact_id": "d" * 32,
-                    "filename": "threat-graph.html",
-                    "mime_type": "text/html",
-                    "label": "打开关系图",
-                }]),
-            ),
-            patch("api.async_tasks.agent_loader.publish_async_task_result", new=AsyncMock(return_value=True)),
-        ):
-            response = await get_async_task_status("task-1", user_id="u1")
-
-        self.assertEqual(response.status, "success")
-        self.assertEqual(response.run_id, "original-success")
-        self.assertEqual([item.filename for item in response.deliverables], ["threat-graph.html"])
 
     async def test_registers_all_actual_deliverables_without_keyword_inference(self) -> None:
         """交付件以子 Agent 实际写入结果为准，不按用户文本关键词筛选。"""
@@ -425,13 +392,8 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(content, "结论：采购金额集中。\n建议：复核大额订单。")
 
-    def test_extracts_only_standard_sandbox_deliverables(self) -> None:
-        """下载登记只能接受受控目录、MIME 类型和文件名组成的交付协议。"""
-        self.assertEqual(_extract_deliverables(DELIVERABLE_LINE)[0]["path"], "/deliverables/threat-report.md")
-        self.assertEqual(_extract_deliverables("DELIVERABLE: /tmp/report.md | text/markdown | 报告"), [])
-
     def test_prefers_structured_write_deliverable_result(self) -> None:
-        """新 C 交付件从工具结果读取，不依赖模型自由文本。"""
+        """交付件从工具结果读取，不依赖模型自由文本。"""
         values = {"messages": [{
             "name": "write_deliverable",
             "content": json.dumps({
@@ -442,7 +404,7 @@ class AsyncTaskStatusTests(unittest.IsolatedAsyncioTestCase):
                 "label": "分析报告",
             }),
         }]}
-        deliverables = _extract_task_deliverables(values, "DELIVERABLE: /tmp/invalid.md | text/markdown | 无效")
+        deliverables = _extract_task_deliverables(values)
         self.assertEqual(deliverables[0]["path"], "/deliverables/report.md")
 
 class AsyncTaskDeliveryTests(unittest.IsolatedAsyncioTestCase):

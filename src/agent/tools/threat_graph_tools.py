@@ -14,6 +14,16 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 _HTML_PREFIXES = ("<!doctype html", "<html", "<svg")
 _HTML_URL_PATTERN = re.compile(r"https?://\S+\.html(?:[?#].*)?$", re.IGNORECASE)
+_G6_V5_SCRIPT_PATTERN = re.compile(r"@antv/g6@5(?:[./]|$)", re.IGNORECASE)
+_G6_LEGACY_DATA_CALL_PATTERN = re.compile(r"(?m)^\s*graph\.data\(data\);\s*$")
+_G6_GRAPH_CONSTRUCTOR_PATTERN = re.compile(r"(const\s+graph\s*=\s*new\s+Graph\s*\(\s*\{)")
+_G6_FIT_VIEW_OPTION_PATTERN = re.compile(r"\bfitView\s*:\s*true\s*,?")
+_G6_FIT_VIEW_PADDING_PATTERN = re.compile(r"\s*fitViewPadding\s*:\s*[^,\n}]+,?")
+_G6_FIT_VIEW_CALL_PATTERN = re.compile(r"(?m)^\s*graph\.fitView\(\);\s*$")
+_G6_LEGACY_BEHAVIORS_PATTERN = re.compile(
+    r"behaviors\s*:\s*\{\s*default\s*:\s*(\[[^\]]*\])\s*\}\s*,?",
+    re.DOTALL,
+)
 
 
 class ChartsMcpUnavailableError(RuntimeError):
@@ -150,6 +160,60 @@ def _request_html_config(chart_config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def _network_graph_name(value: Any) -> str:
+    """从威胁实体或关系端点读取 Charts MCP 需要的稳定节点名称。"""
+    if isinstance(value, dict):
+        for key in ("name", "canonicalValue", "canonical_value", "label", "id", "value"):
+            resolved = value.get(key)
+            if resolved is not None and str(resolved).strip():
+                return str(resolved).strip()
+        return ""
+    return str(value).strip() if value is not None else ""
+
+
+def _normalize_network_graph_config(chart_type: str, chart_config: dict[str, Any]) -> dict[str, Any]:
+    """将威胁图谱实体关系转换为 Charts MCP network_graph 的 name/source/target 格式。"""
+    if chart_type != "network_graph":
+        return chart_config
+    config = dict(chart_config)
+    graph_data = config.get("data")
+    if not isinstance(graph_data, dict):
+        raise ValueError("关系图数据必须包含 nodes 和 edges 对象。")
+
+    aliases: dict[str, str] = {}
+    nodes: list[dict[str, str]] = []
+    for node in graph_data.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        name = _network_graph_name(node)
+        if not name:
+            continue
+        for value in (node.get("name"), node.get("canonicalValue"), node.get("canonical_value"), node.get("label"), node.get("id")):
+            alias = _network_graph_name(value)
+            if alias:
+                aliases[alias] = name
+        nodes.append({"name": name})
+    nodes = list({node["name"]: node for node in nodes}.values())
+    if not nodes:
+        raise ValueError("关系图没有可用节点，无法生成空白图表。")
+
+    edges: list[dict[str, str]] = []
+    for edge in graph_data.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        source = aliases.get(_network_graph_name(edge.get("source")), _network_graph_name(edge.get("source")))
+        target = aliases.get(_network_graph_name(edge.get("target")), _network_graph_name(edge.get("target")))
+        if not source or not target or source not in {node["name"] for node in nodes} or target not in {node["name"] for node in nodes}:
+            continue
+        label = _network_graph_name(
+            edge.get("name") or edge.get("relationType") or edge.get("relation_type") or edge.get("label")
+        )
+        edges.append({"source": source, "target": target, "name": label})
+
+    config["data"] = {"nodes": nodes, "edges": edges}
+    return config
+
+
 async def _download_html(url: str) -> str:
     """下载 Charts MCP 返回的临时 HTML，避免把远程 URL 交给前端。"""
     async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
@@ -207,7 +271,58 @@ async def _html_from_result(result: Any) -> str:
     if payload is None:
         raise RuntimeError("Charts MCP 未返回 HTML 或 HTML URL")
     payload_type, payload_value = payload
-    return await _download_html(payload_value) if payload_type == "html-url" else payload_value
+    html = await _download_html(payload_value) if payload_type == "html-url" else payload_value
+    return _normalize_g6_v5_html(html)
+
+
+def _normalize_g6_v5_html(html: str) -> str:
+    """修复 Charts MCP 生成的混合 G6 4/5 API 页面，避免浏览器执行时白屏。"""
+    if not _G6_V5_SCRIPT_PATTERN.search(html):
+        return html
+
+    normalized = html
+    if _G6_LEGACY_DATA_CALL_PATTERN.search(normalized):
+        normalized = _G6_LEGACY_DATA_CALL_PATTERN.sub("", normalized)
+        normalized = _G6_GRAPH_CONSTRUCTOR_PATTERN.sub(
+            """const g6Data = {
+  nodes: (data.nodes || []).map((node) => ({
+    ...node,
+    data: { ...(node.data || {}), label: node.label || node.id },
+    style: {
+      ...(node.style || {}),
+      x: node.x,
+      y: node.y,
+      labelText: node.label || node.id,
+      labelFill: '#333',
+      labelFontSize: 12,
+      labelPlacement: 'bottom',
+    },
+  })),
+  edges: (data.edges || []).map((edge) => ({
+    ...edge,
+    data: { ...(edge.data || {}), label: edge.label || '' },
+    style: {
+      ...(edge.style || {}),
+      labelText: edge.label || '',
+      labelFill: '#555',
+      labelFontSize: 11,
+      labelPlacement: 'center',
+    },
+  })),
+};
+
+\\1
+    data: g6Data,""",
+            normalized,
+            count=1,
+        )
+    normalized = re.sub(r"\bmodes\s*:", "behaviors:", normalized)
+    # G6 5 移除了 Mode：behaviors 必须是数组，旧版的 default 包装会在构造时白屏。
+    normalized = _G6_LEGACY_BEHAVIORS_PATTERN.sub(r"behaviors: \1,", normalized)
+    normalized = normalized.replace("'drag-node'", "'drag-element'")
+    normalized = _G6_FIT_VIEW_OPTION_PATTERN.sub("autoFit: 'view',", normalized)
+    normalized = _G6_FIT_VIEW_PADDING_PATTERN.sub("", normalized)
+    return _G6_FIT_VIEW_CALL_PATTERN.sub("", normalized)
 
 
 def create_chart_tools() -> list[Any]:
@@ -275,8 +390,14 @@ def create_chart_tools() -> list[Any]:
                 ensure_ascii=False,
             )
         try:
+            chart_config = _normalize_network_graph_config(chart_type, chart_config)
             html = await _html_from_result(
                 await chart_tool.ainvoke(_request_html_config(chart_config)),
+            )
+        except ValueError as exc:
+            return json.dumps(
+                {"status": "invalid_input", "message": str(exc)},
+                ensure_ascii=False,
             )
         except Exception:
             return json.dumps(

@@ -111,9 +111,11 @@ class HistorySessionTests(unittest.IsolatedAsyncioTestCase):
                 "id": "call-1", "name": "start_async_task", "args": {"description": "report"},
             }]),
             ToolMessage(content=f"task_id: {task_id}", tool_call_id="call-1"),
-            AIMessage(id=f"async-task-result:{task_id}", content="report", additional_kwargs={
-                "source": "main", "async_task_id": task_id,
-            }),
+            AIMessage(
+                id=f"async-task-result:{task_id}",
+                content="report",
+                additional_kwargs={"source": "main"},
+            ),
         ])
         self.assertEqual(messages[0].async_task_id, task_id)
         self.assertEqual(messages[0].tool_status, "done")

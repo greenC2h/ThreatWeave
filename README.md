@@ -11,7 +11,7 @@ ThreatWeave 是一个面向公开威胁情报的工作台。它通过确定性 P
 - Java Spring Boot：ThreatWeave 文档和图谱的类型化命令接口，以及受控只读查询接口。
 - MCP：只暴露 `describe_read_model` 和 `execute_read_query` 两个只读业务查询工具。
 
-当前架构、运行方式、接口和排障说明见 [项目技术文档](doc/PROJECT_DOCUMENTATION.md)；已确认的业务边界和数据模型见 [凿定决策](doc/THREATWEAVE_CONFIRMED_DECISIONS.md)。
+当前架构、运行方式、接口、业务边界和排障说明见 [项目技术文档](doc/PROJECT_DOCUMENTATION.md)。
 
 ## 本地运行
 

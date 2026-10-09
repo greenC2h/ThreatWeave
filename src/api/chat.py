@@ -156,10 +156,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="ThreatWeave 威胁情报工作台", lifespan=lifespan)
 
 def _mount_web_assets(application: FastAPI, web_dir: Path) -> None:
-    """
-    挂载前端资源目录，兼容 Vite 默认的 /assets 和已有 /static 路径。
-    """
-    application.mount("/static", StaticFiles(directory=web_dir), name="static")
+    """挂载 Vite 构建生成的前端资源目录。"""
     assets_dir = web_dir / "assets"
     if assets_dir.is_dir():
         application.mount("/assets", StaticFiles(directory=assets_dir), name="assets")

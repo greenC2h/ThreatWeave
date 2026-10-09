@@ -477,6 +477,7 @@ function normalizeMessage(message) {
 }
 
 function restoreAsyncDelegationResults(restoredMessages) {
+  const deliveredTaskIds = new Set();
   const delegations = restoredMessages
     .map((message, index) => ({ message, index }))
     .filter(({ message }) => message.role === "delegation" && !message.result && !message.visualization && !(message.deliverables || []).length);
@@ -484,19 +485,29 @@ function restoreAsyncDelegationResults(restoredMessages) {
   for (const { message: delegation, index } of delegations) {
     const result = restoredMessages
       .slice(index + 1)
-      .find((message) => message.role === "assistant"
-        && delegation.asyncTaskId && message.asyncTaskId === delegation.asyncTaskId);
+      .find((message) => {
+        const messageId = String(message.id || "");
+        const resultTaskId = message.asyncTaskId
+          || (messageId.startsWith("async-task-result:")
+            ? messageId.slice("async-task-result:".length)
+            : "");
+        return message.role === "assistant"
+          && delegation.asyncTaskId
+          && resultTaskId === delegation.asyncTaskId;
+      });
     if (result) {
       delegation.result = result.content;
+      deliveredTaskIds.add(delegation.asyncTaskId);
     }
   }
+  return deliveredTaskIds;
 }
 
 function restoreSessionState(response) {
   interruptData.value = response.interrupt || null;
   // 历史占位工具默认 calling；有中断时复用实时中断规则，排除独立后台任务。
   if (interruptData.value) finishPendingTools("pending");
-  restoreAsyncDelegationResults(messages.value);
+  const deliveredTaskIds = restoreAsyncDelegationResults(messages.value);
   for (const message of messages.value) {
     if (isAsyncDelegation(message) && message.asyncTaskId) {
       const completed = completedAsyncTasks.get(message.asyncTaskId);
@@ -507,6 +518,11 @@ function restoreSessionState(response) {
         // 避免刷新或投递重试时再次显示相同的下载入口。
         message.visualization = completed.delivered ? null : completed.visualization || message.visualization;
         message.deliverables = completed.delivered ? [] : completed.deliverables || message.deliverables;
+      } else if (deliveredTaskIds.has(message.asyncTaskId)) {
+        // 历史已包含同任务 ID 的主 Agent 最终回复，说明结果已投递完成。
+        // 刷新页面后不应因内存中的 completedAsyncTasks 丢失而重新显示为执行中。
+        message.toolStatus = "done";
+        message.deliveryStatus = "delivered";
       } else {
         // 历史的 done 可能仅表示启动工具完成，必须查询后台任务的真实终态。
         message.toolStatus = "calling";

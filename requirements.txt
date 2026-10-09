@@ -1,6 +1,6 @@
 # ThreatWeave Agent Python 运行时与测试依赖。
 # 使用项目根目录的 uv 环境安装：
-# uv pip install --python .\myagent\Scripts\python.exe -r requirements.txt
+# uv pip install --python .\.venv\Scripts\python.exe -r requirements.txt
 
 # Agent 编排与 LangGraph 运行时
 deepagents==0.7.13

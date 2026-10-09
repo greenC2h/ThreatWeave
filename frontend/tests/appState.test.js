@@ -196,6 +196,31 @@ test("restored task IDs poll even when the start tool was historically done", as
   app.unmount();
 });
 
+test("restored delivered async task is completed without another status poll", () => {
+  const app = setup();
+  app.threadId.value = "thread";
+  app.messages.value = [
+    {
+      id: "delegation",
+      role: "delegation",
+      toolName: "start_async_task",
+      asyncTaskId: "task",
+      toolStatus: "calling",
+    },
+    {
+      id: "async-task-result:task",
+      role: "assistant",
+      content: "主 Agent 已整理分析结果。",
+    },
+  ];
+
+  app.restoreSessionState({});
+
+  assert.equal(app.messages.value[0].toolStatus, "done");
+  assert.equal(app.timers.size, 0);
+  app.unmount();
+});
+
 test("history interrupt restores waiting tools without pausing independent background tasks", async () => {
   const app = setup({ getSessionMessages: async () => ({
     thread_id: "paused",

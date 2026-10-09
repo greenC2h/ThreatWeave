@@ -38,16 +38,8 @@ JAVA_MAVEN_COMMAND = os.environ.get(
 MCP_HOST = os.environ.get("MYAGENT_MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MYAGENT_MCP_PORT", "18081"))
 MCP_PATH = os.environ.get("MYAGENT_MCP_PATH", "/mcp")
-ASYNC_AGENT_HOST = os.environ.get(
-    "MYAGENT_ASYNC_AGENT_HOST",
-    os.environ.get("MYAGENT_ASYNC_CHART_HOST", "127.0.0.1"),
-)
-ASYNC_AGENT_PORT = int(
-    os.environ.get(
-        "MYAGENT_ASYNC_AGENT_PORT",
-        os.environ.get("MYAGENT_ASYNC_CHART_PORT", "18082"),
-    )
-)
+ASYNC_AGENT_HOST = os.environ.get("MYAGENT_ASYNC_AGENT_HOST", "127.0.0.1")
+ASYNC_AGENT_PORT = int(os.environ.get("MYAGENT_ASYNC_AGENT_PORT", "18082"))
 SCHEDULER_ENABLED = os.environ.get(
     "THREATWEAVE_SCHEDULER_ENABLED",
     PROJECT_DOTENV_VALUES.get("THREATWEAVE_SCHEDULER_ENABLED", "true") or "true",
@@ -94,8 +86,6 @@ def build_python_env() -> dict[str, str]:
     environment["LOG_COLOR"] = "false"
     async_agent_url = f"http://{ASYNC_AGENT_HOST}:{ASYNC_AGENT_PORT}"
     environment["MYAGENT_ASYNC_AGENT_PROTOCOL_URL"] = async_agent_url
-    # 保留旧变量，避免已有本地启动脚本在迁移期间失效。
-    environment["MYAGENT_ASYNC_CHART_URL"] = async_agent_url
     environment.setdefault(
         "JAVA_API_BASE_URL",
         f"http://{JAVA_BACKEND_HOST}:{JAVA_BACKEND_PORT}/api",

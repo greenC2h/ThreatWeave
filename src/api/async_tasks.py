@@ -20,7 +20,7 @@ router = APIRouter()
 
 ASYNC_AGENT_PROTOCOL_URL = os.getenv(
     "MYAGENT_ASYNC_AGENT_PROTOCOL_URL",
-    os.getenv("MYAGENT_ASYNC_CHART_URL", "http://127.0.0.1:18082"),
+    "http://127.0.0.1:18082",
 )
 TERMINAL_RUN_STATUSES = {"success", "error", "interrupted", "cancelled", "timeout"}
 TASK_ID_PATTERN = re.compile(
@@ -34,13 +34,6 @@ _RUN_LIMIT_ERROR_PATTERN = re.compile(
 _INTERNAL_ARTIFACT_LINE_PATTERN = re.compile(
     r"(?im)^[^\r\n]*(?:资源(?:\s|\*|_)*ID|静态(?:\s|\*|_)*HTML(?:\s|\*|_)*文件)[^\r\n]*(?:\r?\n|$)",
 )
-DELIVERABLE_LINE_PATTERN = re.compile(
-    r"(?im)^\s*DELIVERABLE\s*:\s*"
-    r"(/deliverables/[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:md|html|json))\s*\|\s*"
-    r"(text/markdown|text/html|application/json)\s*\|\s*([^\r\n|]{1,120})\s*$"
-)
-
-
 def _get_attr(value: Any, key: str, default: Any = None) -> Any:
     """兼容 LangGraph SDK 返回的字典和对象属性访问。"""
     return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
@@ -125,29 +118,18 @@ def _run_limit_error(content: str) -> str | None:
     return None
 
 
-def _extract_deliverables(content: str) -> list[dict[str, str]]:
-    """兼容旧任务的文本交付协议。"""
-    return [
-        {"path": path, "mime_type": mime_type, "label": label.strip()}
-        for path, mime_type, label in DELIVERABLE_LINE_PATTERN.findall(content)
-    ]
-
-
-def _extract_task_deliverables(values: Any, content: str) -> list[dict[str, str]]:
-    """优先读取实际写入工具结果，兼容旧 Agent 的最终文本声明。"""
+def _extract_task_deliverables(values: Any) -> list[dict[str, str]]:
+    """从异步任务实际调用的交付工具结果中提取文件声明。"""
     specifications: list[dict[str, str]] = []
     if isinstance(values, dict) and isinstance(values.get("messages"), list):
         for message in values["messages"]:
             if _get_attr(message, "name") == "write_deliverable":
                 specifications.extend(extract_deliverable_specs(_get_attr(message, "content", "")))
-    if not specifications:
-        specifications = _extract_deliverables(content)
     return list({item["path"]: item for item in specifications}.values())
 
 
 def _sanitize_task_content(content: str) -> str:
     """移除系统登记报告和图表时不应展示的内部标识。"""
-    content = DELIVERABLE_LINE_PATTERN.sub("", content)
     return _INTERNAL_ARTIFACT_LINE_PATTERN.sub("", content).strip()
 
 
@@ -187,20 +169,11 @@ async def get_async_task_status(
         state = await client.threads.get_state(task_id)
         values = _get_attr(state, "values", {})
         content, visualization = _extract_task_output(values)
-        deliverable_specs = _extract_task_deliverables(values, content)
+        deliverable_specs = _extract_task_deliverables(values)
         content = _sanitize_task_content(content)
     except Exception as exc:
         # run 成功不代表已读到结果；失败必须可重试，不能写入占位成功消息。
         raise HTTPException(status_code=502, detail="无法读取异步任务结果，请稍后重试") from exc
-
-    # 旧版 DeepAgents 暴露过 update_async_task。它会在原线程追加一次运行，更新失败时
-    # 不应覆盖同一线程中已经成功写入且仍可读取的交付件。
-    prior_successful_run = next(
-        (run for run in runs[1:] if _normalized_run_status(run) == "success"), None,
-    )
-    if status != "success" and prior_successful_run is not None and (content or visualization or deliverable_specs):
-        latest_run = prior_successful_run
-        status = "success"
 
     delivered = False
     error = None

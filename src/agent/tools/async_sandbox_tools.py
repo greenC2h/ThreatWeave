@@ -16,6 +16,8 @@ from agent.backends.sandbox_proxy import SandboxBackendProxy
 
 
 TERMINAL_RUN_STATUSES = frozenset({"success", "error", "interrupted", "cancelled", "timeout"})
+# 启动只应提交远端任务，不能因为沙箱客户端或本地 Agent Protocol 卡住而永久占用对话流。
+ASYNC_TASK_START_TIMEOUT_SECONDS = 30
 
 
 def _tracked_tasks(runtime: ToolRuntime) -> dict[str, dict[str, Any]]:
@@ -45,6 +47,17 @@ def _run_id(run: Any) -> str | None:
     return str(value) if value else None
 
 
+async def _await_start_step(awaitable: Any, step_name: str) -> Any:
+    """在有限时间内完成异步任务的单个启动步骤，超时信息对用户可诊断。"""
+    try:
+        return await asyncio.wait_for(
+            awaitable,
+            timeout=ASYNC_TASK_START_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as error:
+        raise RuntimeError(f"{step_name}超时") from error
+
+
 def create_async_sandbox_tools(
     async_subagents: list[dict[str, Any]],
     *,
@@ -64,17 +77,26 @@ def create_async_sandbox_tools(
         if registration is None:
             return f"未知异步子 Agent: {subagent_type}"
         try:
-            sandbox_id = await asyncio.to_thread(lambda: sandbox_backend.id)
+            sandbox_id = await _await_start_step(
+                asyncio.to_thread(lambda: sandbox_backend.id),
+                "读取用户沙箱标识",
+            )
             client = get_client(url=str(registration["url"]))
-            thread = await client.threads.create()
-            run = await client.runs.create(
-                thread_id=thread["thread_id"],
-                assistant_id=str(registration["graph_id"]),
-                input={"messages": [{
-                    "role": "user",
-                    "content": description,
-                }]},
-                context={"sandbox_id": sandbox_id},
+            thread = await _await_start_step(
+                client.threads.create(),
+                "创建异步任务",
+            )
+            run = await _await_start_step(
+                client.runs.create(
+                    thread_id=thread["thread_id"],
+                    assistant_id=str(registration["graph_id"]),
+                    input={"messages": [{
+                        "role": "user",
+                        "content": description,
+                    }]},
+                    context={"sandbox_id": sandbox_id},
+                ),
+                "提交异步任务",
             )
         except Exception as error:  # Agent Protocol 客户端的传输异常未提供稳定类型。
             return f"启动异步子 Agent 失败: {error}"

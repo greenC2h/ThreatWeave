@@ -16,9 +16,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_SOURCES_DIR = Path(__file__).resolve().parent / "sources"
 DIRECT_URL_SOURCE_ID = "direct_url"
 
-_SELECTOR_KEYS = ("content_selector", "title_selector", "date_selector", "article_link_attribute")
-
-
 def _sources_dir() -> Path:
     """返回来源目录；优先使用环境变量指定的测试替身目录。"""
     override = os.getenv("THREATWEAVE_SOURCES_DIR")

@@ -55,10 +55,7 @@ from agent.middlewares.skills_sync import SandboxSkillsMiddleware
 # 异步 ThreatWeave 子 Agent 运行在独立的 Agent Protocol 服务中。
 ASYNC_AGENT_PROTOCOL_URL = os.getenv(
     "MYAGENT_ASYNC_AGENT_PROTOCOL_URL",
-    os.getenv(
-        "MYAGENT_ASYNC_CHART_URL",
-        "http://127.0.0.1:18082",
-    ),
+    "http://127.0.0.1:18082",
 )
 
 

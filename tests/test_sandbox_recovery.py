@@ -23,7 +23,10 @@ from agent.backends.open_sandbox import OpenSandboxBackend
 from agent.backends.sandbox_proxy import SandboxBackendProxy
 from agent.backends.skill_sync import SANDBOX_MANIFEST_PATH, SandboxSkillSynchronizer
 from agent.middlewares.skills_sync import SandboxSkillsMiddleware
-from agent.tools.async_sandbox_tools import create_async_sandbox_tools
+from agent.tools.async_sandbox_tools import (
+    ASYNC_TASK_START_TIMEOUT_SECONDS,
+    create_async_sandbox_tools,
+)
 
 
 class SkillSyncTests(unittest.TestCase):
@@ -263,6 +266,31 @@ class SandboxAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tracked_task["agent_name"], "chart")
         self.assertEqual(tracked_task["run_id"], "run-1")
         self.assertEqual(tracked_task["status"], "running")
+
+    async def test_task_start_timeout_returns_a_diagnostic_tool_result(self) -> None:
+        """远端线程创建卡住时，主会话必须结束工具调用并显示具体阶段。"""
+        task = create_async_sandbox_tools(
+            [{"name": "chart", "url": "unused", "graph_id": "graph"}],
+            sandbox_backend=SandboxBackendProxy(MagicMock(id="sandbox")),
+        )[0]
+        client = SimpleNamespace(
+            threads=SimpleNamespace(create=AsyncMock(side_effect=asyncio.TimeoutError)),
+            runs=SimpleNamespace(create=AsyncMock()),
+        )
+
+        with patch("agent.tools.async_sandbox_tools.get_client", return_value=client):
+            result = await task.coroutine(
+                "chart",
+                "chart",
+                SimpleNamespace(tool_call_id="call-1"),
+            )
+
+        self.assertEqual(
+            result,
+            "启动异步子 Agent 失败: 创建异步任务超时",
+        )
+        client.runs.create.assert_not_called()
+        self.assertGreater(ASYNC_TASK_START_TIMEOUT_SECONDS, 0)
 
     async def test_cached_health_probe_is_off_event_loop_and_manager_closes(self) -> None:
         with patch("agent.backends.sandbox_manager.OPEN_SANDBOX_API_KEY", "test"):

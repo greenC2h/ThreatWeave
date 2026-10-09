@@ -145,14 +145,12 @@ npm --prefix .\frontend install
 | `OPEN_SANDBOX_HOST`、`OPEN_SANDBOX_PORT`、`OPEN_SANDBOX_API_KEY`、`OPEN_SANDBOX_IMAGE` | 沙箱服务连接与运行镜像。管理 API 默认地址为 `127.0.0.1:18083`，默认镜像为 `myagent-sandbox:1`。 |
 | `MODELSCOPE_BING_SEARCH_MCP_TOKEN` | 公共搜索 MCP 的连接标识。 |
 | `MODELSCOPE_CHARTS_MCP_URL` | 图表 MCP 的完整服务地址。 |
+| `THREATWEAVE_PIPELINE_RUNNING_LEASE_SECONDS` | 同一文档处理记录的运行租约时长，最小为 60 秒。 |
 | `THREATWEAVE_SCHEDULER_ENABLED` | 是否由启动器托管定时采集调度器。 |
 
 启动器将 `.env` 配置注入托管进程，并补充 `PYTHONPATH=src`、UTF-8 日志编码、异步服务地址和默认 Java API 地址。
 
-当前配置有两点需要注意：
-
-- **图表服务使用完整 URL**：工具实际读取 `MODELSCOPE_CHARTS_MCP_URL`；模板中的 `MODELSCOPE_CHARTS_MCP_TOKEN` 是旧配置项，需要按实际服务补充 URL。
-- **显式设置定时采集开关**：模板将 `THREATWEAVE_SCHEDULER_ENABLED` 设为 `false`；进程环境和 `.env` 均未设置时，启动器默认启用调度器。
+当前模板将 `THREATWEAVE_SCHEDULER_ENABLED` 设为 `false`；进程环境和 `.env` 均未设置时，启动器默认启用调度器。
 
 **Agent 执行需要有效的 OpenSandbox 配置。** 缺少密钥时会跳过预热，实际 Agent 请求会在获取沙箱时失败；页面和部分非 Agent 接口仍可能可用。沙箱机制见第 5 章。
 
@@ -394,9 +392,7 @@ flowchart TD
 
 **Pipeline 工具绑定发起用户身份，交付件工具绑定该用户的沙箱。** 模型提供文章目标和处理参数，用户身份与文件执行环境由主 Agent 构建时确定。
 
-**业务工具列表与框架基础能力需要区分。** DeepAgents 还会为本地子 Agent 装配文件访问、摘要和工具调用修复等基础支持；四个业务工具并不代表它完全没有其他框架工具。
-
-当前子 Agent **没有独立技能配置**，任务指引主要来自 YAML 系统提示词和工具说明。技能不会因主 Agent 配置了 `/skills/main/` 而自动成为它的专用技能。
+当前子 Agent **没有独立技能配置**，任务指引主要来自 YAML 系统提示词和工具说明。
 
 **单篇查询范围由路由和子 Agent 提示词约束。** 通用查询接口负责限制可读数据集和 SQL 执行行为，本身不强制每条查询只能涉及一篇文章。交付件工具支持多种文本类型，但该角色的导出约定是单篇文章 Markdown。
 

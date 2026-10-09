@@ -131,17 +131,22 @@ def serialize_messages(messages: list[Any], user_id: str = "u1") -> list[Message
             deliverables = _deliverables_for_user(message_content, user_id)
             if content or deliverables:
                 source = str(additional_kwargs.get("source", "main"))
+                message_id = str(_message_value(message, "id", None) or f"message-{index}")
+                async_task_id = additional_kwargs.get("async_task_id")
+                if not async_task_id and message_id.startswith("async-task-result:"):
+                    # 异步回执的消息 ID 是持久化边界；早期 checkpoint 未必保留附加字段。
+                    async_task_id = message_id.removeprefix("async-task-result:")
                 # 子 Agent 自身的文本是内部执行记录，用户历史只展示主 Agent 交付。
                 if source != "main":
                     continue
                 visualization = extract_visualization(message_content)
                 serialized.append(
                     Message(
-                        id=str(_message_value(message, "id", None) or f"message-{index}"),
+                        id=message_id,
                         role="assistant",
                         content=content,
                         source=source,
-                        async_task_id=additional_kwargs.get("async_task_id"),
+                        async_task_id=async_task_id,
                         visualization=Visualization(**visualization) if visualization else None,
                         deliverables=deliverables,
                         created_at=now,

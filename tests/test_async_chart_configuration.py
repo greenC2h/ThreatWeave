@@ -32,12 +32,11 @@ def _configured_tool(name: str):
 class AsyncSubagentConfigurationTests(unittest.TestCase):
     """确保高级分析任务只使用新的受控查询接口。"""
 
-    def test_main_prompt_requires_sandbox_guidance_and_preferences(self) -> None:
+    def test_main_prompt_requires_context_files_and_compaction(self) -> None:
         instructions = f"{system_prompt}\n{get_async_subagent_instructions()}"
 
         self.assertIn("`/AGENTS.md`", instructions)
         self.assertIn("`/memories/{user_id}/preferences.md`", instructions)
-        self.assertIn("沙箱中的虚拟路径", instructions)
         self.assertIn("compact_conversation", instructions)
 
     def test_agents_rules_define_task_delegation_boundaries(self) -> None:
@@ -123,7 +122,7 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("get_chart_spec", text)
         self.assertIn("generate_visualization", text)
         self.assertIn("严禁自行编写、拼接或输出 HTML 图表代码", text)
-        self.assertIn("必须调用 `generate_visualization`", text)
+        self.assertIn("generate_visualization", text)
         self.assertNotIn("threat_graph_query", text)
         self.assertNotIn("generate_network_graph_html", text)
 

@@ -14,7 +14,7 @@ from api.chat import _mount_web_assets, index
 
 
 class WebAssetRouteTests(unittest.TestCase):
-    """用隔离的构建目录检查真实首页和静态路由，不运行应用 lifespan。"""
+    """用隔离的构建目录检查真实首页和资源路由，不运行应用 lifespan。"""
 
     def test_built_homepage_script_and_stylesheet_urls_resolve(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -38,16 +38,5 @@ class WebAssetRouteTests(unittest.TestCase):
                 self.assertIn("/assets/index-test.js", homepage.text)
                 self.assertEqual(client.get("/assets/index-test.js").status_code, 200)
                 self.assertEqual(client.get("/assets/index-test.css").status_code, 200)
-                self.assertEqual(client.get("/static/assets/index-test.js").status_code, 200)
                 self.assertEqual(client.get("/assets/missing.js").status_code, 404)
                 self.assertEqual(client.get("/assets/%2e%2e/%2e%2e/private.txt").status_code, 404)
-
-    def test_legacy_static_directory_does_not_require_assets_subdirectory(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            web_dir = Path(temporary)
-            (web_dir / "index.html").write_text("legacy", encoding="utf-8")
-            application = FastAPI()
-            _mount_web_assets(application, web_dir)
-            with TestClient(application) as client:
-                self.assertEqual(client.get("/static/index.html").status_code, 200)
-                self.assertEqual(client.get("/assets/missing.js").status_code, 404)
