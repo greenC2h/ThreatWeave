@@ -74,6 +74,11 @@ ThreatWeave-Agent/
 │   └── services/            # Task, deliverable, and runtime resource services
 ├── tests/                   # Python tests
 ├── pictures/                # README and project visual assets
+├── demo/                    # Project demo video and generated deliverables
+│   ├── videos/              # Demo videos
+│   └── artifacts/           # Example deliverables generated in the demo
+│       ├── reports/
+│       └── visualizations/
 ├── doc/                     # Full technical documentation
 ├── sandbox/                 # OpenSandbox image and runtime files
 ├── .env.example             # Environment variable template
@@ -169,9 +174,17 @@ mvn.cmd -f .\java-backend\pom.xml -DskipTests compile
 
 ## 🎬 Demo
 
-<!-- TODO: Add the project demo video or GIF here. -->
+<video src="https://raw.githubusercontent.com/greenC2h/ThreatWeave/master/demo/videos/threatweave-demo.mp4" controls preload="metadata" width="100%">
+  Your browser does not support inline video playback. Open the <a href="demo/videos/threatweave-demo.mp4">ThreatWeave demo video</a> instead.
+</video>
 
-Demo video coming soon.
+Example deliverables generated in the video:
+
+- [Lazarus threat intelligence report](demo/artifacts/reports/lazarus-organization-report.md)
+- [StreamSpy entity and relationship export](demo/artifacts/reports/streamspy-entities-relations.md)
+- [StreamSpy / Patchwork analysis article](demo/artifacts/reports/streamspy-patchwork-websocket-trojan.md)
+- [Beijing vs. Shanghai weather comparison](demo/artifacts/reports/weather-comparison-beijing-shanghai.md)
+- [NightHeron relationship graph](demo/artifacts/visualizations/nightheron-relationship-graph.html)
 
 ## 📚 Documentation
 

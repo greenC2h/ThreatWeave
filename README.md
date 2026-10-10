@@ -74,6 +74,11 @@ ThreatWeave-Agent/
 │   └── services/            # 任务、交付文件与运行时资源服务
 ├── tests/                   # Python 测试
 ├── pictures/                # README 与项目视觉资源
+├── demo/                    # 项目演示视频与演示生成的交付件
+│   ├── videos/              # 演示视频
+│   └── artifacts/           # 视频中生成的示例交付件
+│       ├── reports/
+│       └── visualizations/
 ├── doc/                     # 完整技术文档
 ├── sandbox/                 # OpenSandbox 镜像与运行脚本
 ├── .env.example             # 环境变量模板
@@ -171,9 +176,17 @@ mvn.cmd -f .\java-backend\pom.xml -DskipTests compile
 
 ## 🎬 项目演示
 
-<!-- TODO: 将项目演示视频链接或 GIF 放在这里。 -->
+<video src="https://raw.githubusercontent.com/greenC2h/ThreatWeave/master/demo/videos/threatweave-demo.mp4" controls preload="metadata" width="100%">
+  当前浏览器不支持直接播放视频，请打开 <a href="demo/videos/threatweave-demo.mp4">ThreatWeave 演示视频</a>。
+</video>
 
-演示视频即将补充。
+视频中生成的示例交付件：
+
+- [Lazarus 组织情报分析报告](demo/artifacts/reports/lazarus-organization-report.md)
+- [StreamSpy 实体与关系导出](demo/artifacts/reports/streamspy-entities-relations.md)
+- [StreamSpy / Patchwork 分析文章](demo/artifacts/reports/streamspy-patchwork-websocket-trojan.md)
+- [北京与上海天气对比报告](demo/artifacts/reports/weather-comparison-beijing-shanghai.md)
+- [NightHeron 关系图](demo/artifacts/visualizations/nightheron-relationship-graph.html)
 
 ## 📚 相关文档
 

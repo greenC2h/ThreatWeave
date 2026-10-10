@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NightHeron 组织关系图</title>
+<style>
+  :root{
+    --bg:#0f1420;
+    --panel:#161c2b;
+    --panel-2:#1c2435;
+    --line:#2c3650;
+    --text:#e8ecf6;
+    --muted:#94a1bd;
+    --actor:#ff7a59;
+    --malware:#c678dd;
+    --org:#4dabf7;
+    --doc:#3ddc97;
+    --warn:#f0b429;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:radial-gradient(1200px 600px at 20% -10%, #1b2540 0%, var(--bg) 55%) no-repeat, var(--bg);
+    color:var(--text);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    line-height:1.6;
+    min-height:100vh;
+  }
+  .wrap{max-width:1160px;margin:0 auto;padding:40px 24px 72px;}
+  header h1{
+    font-size:28px;
+    margin:0 0 8px;
+    letter-spacing:.5px;
+  }
+  header p.sub{
+    margin:0;
+    color:var(--muted);
+    font-size:14px;
+  }
+  .badge{
+    display:inline-block;
+    margin-top:14px;
+    padding:5px 12px;
+    font-size:12px;
+    border-radius:999px;
+    background:rgba(240,180,41,.12);
+    border:1px solid rgba(240,180,41,.45);
+    color:var(--warn);
+  }
+  .stats{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    gap:14px;
+    margin:28px 0 8px;
+  }
+  .stat{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:16px 18px;
+  }
+  .stat .n{font-size:26px;font-weight:600;}
+  .stat .l{font-size:12.5px;color:var(--muted);margin-top:4px;}
+  .legend{
+    display:flex;flex-wrap:wrap;gap:18px;
+    margin:22px 0 6px;font-size:13px;color:var(--muted);
+  }
+  .legend span{display:flex;align-items:center;gap:8px;}
+  .dot{width:11px;height:11px;border-radius:50%;display:inline-block;}
+  .dot.actor{background:var(--actor);}
+  .dot.malware{background:var(--malware);}
+  .dot.org{background:var(--org);}
+  .dot.doc{background:var(--doc);}
+
+  .section-title{
+    font-size:15px;
+    font-weight:600;
+    color:var(--muted);
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+    margin:38px 0 16px;
+  }
+
+  /* ---- graph area ---- */
+  .graph{
+    background:linear-gradient(180deg,var(--panel) 0%, var(--panel-2) 100%);
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:34px 28px 18px;
+  }
+  .graph svg{width:100%;height:auto;display:block;}
+  .node-label{font-size:14px;fill:var(--text);font-weight:600;}
+  .node-sub{font-size:11.5px;fill:var(--muted);}
+  .edge-label{font-size:11.5px;fill:var(--muted);}
+  .dashed{stroke-dasharray:6 5;}
+  .node-box{stroke-width:1.6;rx:12;}
+
+  .cards{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(270px,1fr));
+    gap:16px;
+    margin-top:18px;
+  }
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-left:4px solid var(--line);
+    border-radius:12px;
+    padding:18px 20px;
+  }
+  .card.actor{border-left-color:var(--actor);}
+  .card.malware{border-left-color:var(--malware);}
+  .card.org{border-left-color:var(--org);}
+  .card.doc{border-left-color:var(--doc);}
+  .card h3{margin:0 0 6px;font-size:16px;}
+  .card .type{font-size:11.5px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;}
+  .card ul{margin:12px 0 0;padding-left:18px;font-size:13.5px;color:var(--text);}
+  .card ul li{margin:5px 0;}
+  .card .quote{
+    margin-top:12px;padding:10px 12px;font-size:12.5px;
+    background:rgba(255,255,255,.03);
+    border-left:3px solid var(--line);
+    border-radius:6px;color:var(--muted);
+  }
+  .miss{color:var(--warn);font-size:12.5px;margin-top:10px;}
+
+  .notes{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:22px 26px;
+    font-size:13.5px;
+    color:var(--muted);
+  }
+  .notes h2{font-size:15px;color:var(--text);margin:0 0 12px;}
+  .notes ul{margin:0;padding-left:20px;}
+  .notes li{margin:7px 0;}
+  footer{margin-top:34px;font-size:12px;color:#5f6c88;text-align:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>NightHeron 组织关系图</h1>
+    <p class="sub">ThreatWeave 情报库 · 全库只读查询结果</p>
+    <span class="badge">数据来源为测试情报源，仅反映当前库内覆盖范围</span>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="n">1</div><div class="l">相关文章</div></div>
+    <div class="stat"><div class="n">2</div><div class="l">相关实体（组织 + 恶意软件）</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">关系</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">涉及来源</div></div>
+  </div>
+
+  <div class="legend">
+    <span><i class="dot actor"></i>威胁组织</span>
+    <span><i class="dot malware"></i>恶意软件</span>
+    <span><i class="dot org"></i>受害/相关机构</span>
+    <span><i class="dot doc"></i>情报文章</span>
+  </div>
+
+  <div class="section-title">关系结构</div>
+  <div class="graph">
+    <svg viewBox="0 0 980 380" role="img" aria-label="NightHeron 关系图">
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3.2"
+                orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L0,6.4 L9,3.2 z" fill="#7d8bab"></path>
+        </marker>
+        <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="5" result="b"></feGaussianBlur>
+          <feMerge><feMergeNode in="b"></feMergeNode><feMergeNode in="SourceGraphic"></feMerge></feMerge>
+        </filter>
+      </defs>
+
+      <!-- doc -> actor -->
+      <path d="M188 190 C 250 190, 270 190, 330 190"
+            fill="none" stroke="#7d8bab" stroke-width="1.6" marker-end="url(#arrow)"></path>
+      <text class="edge-label" x="258" y="178" text-anchor="middle">MENTIONS</text>
+
+      <!-- actor -> malware -->
+      <path d="M560 190 C 620 190, 640 190, 700 190"
+            fill="none" stroke="#7d8bab" stroke-width="1.6" marker-end="url(#arrow)"></path>
+      <text class="edge-label" x="630" y="178" text-anchor="middle">USES</text>
+
+      <!-- doc node -->
+      <g>
+        <rect class="node-box" x="18" y="146" width="170" height="88" rx="12"
+              fill="rgba(61,220,151,.10)" stroke="#3ddc97"></rect>
+        <text class="node-label" x="103" y="180" text-anchor="middle" fill="#3ddc97">测试情报文章</text>
+        <text class="node-sub" x="103" y="199" text-anchor="middle">NightHeron 恶意软件活动</text>
+        <text class="node-sub" x="103" y="216" text-anchor="middle">2026-10-03</text>
+      </g>
+
+      <!-- actor node -->
+      <g filter="url(#glow)">
+        <rect class="node-box" x="330" y="140" width="230" height="100" rx="12"
+              fill="rgba(255,122,89,.14)" stroke="#ff7a59"></rect>
+        <text class="node-label" x="445" y="176" text-anchor="middle" fill="#ffa588">NightHeron</text>
+        <text class="node-sub" x="445" y="197" text-anchor="middle">威胁组织 · threat_actor</text>
+        <text class="node-sub" x="445" y="218" text-anchor="middle">名称即组织名</text>
+      </g>
+
+      <!-- malware node -->
+      <g>
+        <rect class="node-box" x="700" y="146" width="200" height="88" rx="12"
+              fill="rgba(198,120,221,.14)" stroke="#c678dd"></rect>
+        <text class="node-label" x="800" y="182" text-anchor="middle" fill="#dba6ea">NightHeron 恶意软件</text>
+        <text class="node-sub" x="800" y="203" text-anchor="middle">malware</text>
+        <text class="node-sub" x="800" y="220" text-anchor="middle">与组织同名</text>
+      </g>
+
+      <!-- bottom note inside svg -->
+      <text class="node-sub" x="490" y="330" text-anchor="middle">
+        库内与 NightHeron 相关的证据仅来自该测试源文章，未发现其他入库文档的关联记录
+      </text>
+    </svg>
+  </div>
+
+  <div class="section-title">节点详情</div>
+  <div class="cards">
+    <div class="card doc">
+      <div class="type">情报文章</div>
+      <h3>关于 NightHeron 恶意软件活动的测试情报</h3>
+      <ul>
+        <li>来源：ThreatWeave 合成威胁情报测试源</li>
+        <li>发布时间：2026-10-03</li>
+        <li>作用：库内 NightHeron 相关证据的唯一出处</li>
+      </ul>
+      <div class="quote">“NightHeron 组织在一次测试活动中使用 NightHeron 恶意软件……”</div>
+    </div>
+
+    <div class="card actor">
+      <div class="type">威胁组织</div>
+      <h3>NightHeron</h3>
+      <ul>
+        <li>库内实体类型：threat_actor</li>
+        <li>在文中以攻击方身份出现</li>
+        <li>使用的载荷与自身同名</li>
+      </ul>
+      <div class="miss">库内缺失：别名、置信度、首次/末次发现时间</div>
+    </div>
+
+    <div class="card malware">
+      <div class="type">恶意软件</div>
+      <h3>NightHeron 恶意软件</h3>
+      <ul>
+        <li>库内实体类型：malware</li>
+        <li>由 NightHeron 组织在活动中使用</li>
+      </ul>
+      <div class="miss">库内缺失：样本哈希细化信息、别名、置信度</div>
+    </div>
+
+    <div class="card org">
+      <div class="type">受害机构（非攻击方）</div>
+      <h3>文中提及的攻击目标</h3>
+      <ul>
+        <li>文中提及受害企业为青岚科技有限公司</li>
+        <li>语义角色为 victim，未计入恶意组织</li>
+      </ul>
+      <div class="miss">该类实体仅出现在原文引文，未在关系表中形成独立关系</div>
+    </div>
+  </div>
+
+  <div class="section-title">证据边界与限制</div>
+  <div class="notes">
+    <h2>阅读本图前请注意</h2>
+    <ul>
+      <li>库内 NightHeron 相关文档仅 1 篇，且该来源标注为合成测试源。图中结构反映的是<b>当前库内覆盖范围</b>，不代表真实威胁全景。</li>
+      <li>关系链路（文章 → 组织 → 恶意软件）为库内抽取结果；文中提及的受害机构等仅存在于证据引文，未形成结构化关系，因此图中未连边。</li>
+      <li>库内实体别名表为空，无法通过别名判定 NightHeron 与其他组织名称是否存在同一性。</li>
+      <li>库内实体的别名、置信度、时间戳等字段缺失，图中已如实标注，未做推断补全。</li>
+      <li>以上均为库内查询事实；未使用外部检索，图中不含外部背景信息。</li>
+    </ul>
+  </div>
+
+  <footer>本图由 ThreatWeave 情报助手基于库内查询结果手工绘制，仅用于内部阅读</footer>
+</div>
+</body>
+</html>
