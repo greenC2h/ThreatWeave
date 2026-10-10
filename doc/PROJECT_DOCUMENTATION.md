@@ -369,7 +369,7 @@ Jev 用于在主 Agent 执行前提供轻量的路由参考，不承担回答生
 
 调用时限由 `JEVMODEL_TIMEOUT_SECONDS` 控制，默认 2 秒。缺少密钥、服务不可达、返回非成功状态或返回结构无法解析时，分类器仅记录诊断并返回空结果，随后按原有 Agent 流程继续。该分类只保存在本轮 `ThreatWeaveContext`，不会写入 Checkpointer、用户偏好或长期记忆；`POST /chat/{thread_id}/resume` 恢复暂停图时不重新调用 Jev。
 
-Jev 客户端遵从进程的代理环境。`src/sitecustomize.py` 会在解释器启动时修复本机 `NO_PROXY` 中不被 HTTP 客户端接受的 IPv6 写法，因此分类器不能禁用 `httpx` 的环境配置读取；在通过系统代理访问外部模型服务的部署中，禁用该读取会导致 Jev 请求绕过代理而失败。仓库中的 `jev_minimal_test/run_priority_test.py` 提供独立连通性验证，它只读取根目录 `.env` 的 `JEVMODEL_API_KEY`，发送一个固定的评分请求，并且不会输出或写入密钥。
+Jev 客户端遵从进程的代理环境。`src/sitecustomize.py` 会在解释器启动时修复本机 `NO_PROXY` 中不被 HTTP 客户端接受的 IPv6 写法，因此分类器不能禁用 `httpx` 的环境配置读取；在通过系统代理访问外部模型服务的部署中，禁用该读取会导致 Jev 请求绕过代理而失败。
 
 ## 2.3 同步子 Agent：threat_handle
 
