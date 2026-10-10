@@ -176,17 +176,8 @@ mvn.cmd -f .\java-backend\pom.xml -DskipTests compile
 
 ## 🎬 项目演示
 
-<video src="https://raw.githubusercontent.com/greenC2h/ThreatWeave/master/demo/videos/threatweave-demo.mp4" controls preload="metadata" width="100%">
-  当前浏览器不支持直接播放视频，请打开 <a href="demo/videos/threatweave-demo.mp4">ThreatWeave 演示视频</a>。
-</video>
-
-视频中生成的示例交付件：
-
-- [Lazarus 组织情报分析报告](demo/artifacts/reports/lazarus-organization-report.md)
-- [StreamSpy 实体与关系导出](demo/artifacts/reports/streamspy-entities-relations.md)
-- [StreamSpy / Patchwork 分析文章](demo/artifacts/reports/streamspy-patchwork-websocket-trojan.md)
-- [北京与上海天气对比报告](demo/artifacts/reports/weather-comparison-beijing-shanghai.md)
-- [NightHeron 关系图](demo/artifacts/visualizations/nightheron-relationship-graph.html)
+- [项目演示视频](demo/videos/threatweave-demo.mp4)
+- [视频中生成的示例交付文档](demo/artifacts/)
 
 ## 📚 相关文档
 
