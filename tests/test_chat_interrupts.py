@@ -117,6 +117,12 @@ class ChatInterruptTests(unittest.TestCase):
 class ChatModelErrorTests(unittest.IsolatedAsyncioTestCase):
     """验证模型服务错误能够转换为用户可理解的 HTTP 响应。"""
 
+    async def asyncSetUp(self) -> None:
+        """错误映射测试只验证本地链路，不访问可选分类服务。"""
+        self.enterContext(
+            patch("api.chat.classify_task_intent", new=AsyncMock(return_value=None))
+        )
+
     async def test_maps_model_balance_error_to_service_unavailable(self) -> None:
         """HTTP 402 不应被笼统显示为 Agent 调用失败。"""
         agent = MagicMock()

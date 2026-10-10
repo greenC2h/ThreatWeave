@@ -30,6 +30,7 @@ from api.message_utils import (
     serialize_interrupt as _serialize_interrupt,
 )
 from services.deliverables import extract_deliverable_specs
+from services.task_intent import classify_task_intent
 from services.visualization_artifacts import (
     EXPIRED_VISUALIZATION_SVG,
     get_visualization_path,
@@ -417,6 +418,7 @@ async def _run_chat_unlocked(request: ChatRequest, thread_id: str) -> ChatRespon
     )
     get_state = getattr(agent, "aget_state", None)
     previous_messages = await _previous_state_messages(agent, config)
+    context.task_intent = await classify_task_intent(request.message, previous_messages)
 
     try:
         agent_input = {"messages": [{"role": "user", "content": request.message}]}
@@ -570,7 +572,15 @@ async def _stream_response_unlocked(
         )
         get_state = getattr(agent, "aget_state", None)
         previous_messages = await _previous_state_messages(agent, config)
-        context = ThreatWeaveContext(user_id=request.user_id, username=username)
+        task_intent = None
+        if not is_resume:
+            assert isinstance(request, ChatRequest)
+            task_intent = await classify_task_intent(request.message, previous_messages)
+        context = ThreatWeaveContext(
+            user_id=request.user_id,
+            username=username,
+            task_intent=task_intent,
+        )
         # 必须使用异步流式调用：MCP StructuredTool 不支持同步 invoke/stream。
         # values 流用于捕获 interrupt。仍订阅子图以保证审批和补充信息能冒泡，
         # 但普通子 Agent 事件仅是内部执行细节，不发送给用户界面。

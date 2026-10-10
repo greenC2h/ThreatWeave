@@ -15,6 +15,18 @@ class ThreatWeaveContext:
     """
     user_id: str  # 必填，用户唯一标识。
     username: str  # 必填，用户姓名或登录名。
+    task_intent: "TaskIntent | None" = None  # 本轮 Jev 分类；不写入持久化会话状态。
+
+
+@dataclass(frozen=True)
+class TaskIntent:
+    """表示 Jev 对当前用户请求作出的可信前置分类。"""
+
+    task_type: str | None = None
+    scope: str | None = None
+    wants_markdown_report: bool | None = None
+    wants_html_chart: bool | None = None
+    model: str | None = None
 
 
 @dataclass

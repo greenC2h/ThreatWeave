@@ -30,6 +30,15 @@ DEEPSEEK_REQUEST_TIMEOUT_SECONDS = float(
     os.getenv("DEEPSEEK_REQUEST_TIMEOUT_SECONDS", "120")
 )
 
+# Jev 只用于本轮任务分类，不参与正文生成、业务写入或 Agent 工具调用。
+JEVMODEL_API_KEY = os.getenv("JEVMODEL_API_KEY")
+JEVMODEL_BASE_URL = os.getenv("JEVMODEL_BASE_URL", "https://jevmodel.org").rstrip("/")
+JEVMODEL_MODEL = os.getenv("JEVMODEL_MODEL", "jev-latest")
+JEVMODEL_ENABLED = os.getenv("JEVMODEL_ENABLED", "true").lower() in {
+    "1", "true", "yes", "on",
+}
+JEVMODEL_TIMEOUT_SECONDS = float(os.getenv("JEVMODEL_TIMEOUT_SECONDS", "2"))
+
 MAIN_MODEL = ChatDeepSeek(
     model=DEEPSEEK_MODEL,
     extra_body={"thinking": {"type": "disabled"}},

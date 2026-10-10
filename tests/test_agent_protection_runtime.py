@@ -35,6 +35,7 @@ from agent.middlewares.agent_protection import (
     build_agent_protection_middleware,
 )
 from agent.middlewares.context_injection import ContextInjectionMiddleware
+from agent.schema import TaskIntent
 
 
 class RecordingChatModel(FakeMessagesListChatModel):
@@ -505,6 +506,34 @@ class ContextInjectionMiddlewareTests(unittest.TestCase):
         )
 
         self.assertIs(ContextInjectionMiddleware()._inject_context(request), request)
+
+    def test_injects_task_intent_as_non_authoritative_reference(self) -> None:
+        """可信分类应可见，但必须明确其不能覆盖原始请求。"""
+        request = ModelRequest(
+            model=MagicMock(),
+            messages=[],
+            system_message=SystemMessage(content="原始规则"),
+            runtime=SimpleNamespace(
+                context=SimpleNamespace(
+                    user_id="u1",
+                    username="张三",
+                    task_intent=TaskIntent(
+                        task_type="library_analysis",
+                        scope="entire_library",
+                        wants_markdown_report=False,
+                        wants_html_chart=True,
+                    ),
+                ),
+            ),
+        )
+
+        injected = ContextInjectionMiddleware()._inject_context(request)
+
+        self.assertIn("本轮 Jev 前置分类", injected.system_message.content)
+        self.assertIn("全库查询或关联分析", injected.system_message.content)
+        self.assertIn("全部已入库情报", injected.system_message.content)
+        self.assertIn("HTML 图表：用户明确要求", injected.system_message.content)
+        self.assertIn("原始用户请求与项目规则优先", injected.system_message.content)
 
 
 if __name__ == "__main__":

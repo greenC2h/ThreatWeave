@@ -109,6 +109,12 @@ class ThreadCoordinationTests(unittest.IsolatedAsyncioTestCase):
 class ChatOwnershipTests(unittest.IsolatedAsyncioTestCase):
     """已有 thread 必须属于用户，未指定 thread 的新对话仍可创建。"""
 
+    async def asyncSetUp(self) -> None:
+        """聊天链路测试不应依赖可选的外部 Jev 服务。"""
+        self.enterContext(
+            patch("api.chat.classify_task_intent", new=AsyncMock(return_value=None))
+        )
+
     async def test_nested_interrupt_is_durable_before_sse_finishes(self) -> None:
         """
         子图中断必须冒泡并完成父图 checkpoint，刷新与恢复才能找到同一中断。

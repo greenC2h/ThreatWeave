@@ -42,7 +42,8 @@ Python 应用承载对话 API、Agent、情报处理 Pipeline、查询 MCP 适�
 flowchart TB
     USER["用户"] --> WEB["前端工作台<br/>Vue 3 / Vite"]
     WEB --> API["对话 API<br/>FastAPI"]
-    API --> AGENT["主 Agent 与同步子 Agent<br/>DeepAgents / LangGraph"]
+    API --> JEV["Jev 前置分类<br/>任务类型、范围与交付意图"]
+    JEV --> AGENT["主 Agent 与同步子 Agent<br/>DeepAgents / LangGraph"]
     AGENT -->|提交后台分析| ASYNC["异步分析运行服务<br/>Agent Protocol"]
     API -->|查询状态与接收结果| ASYNC
     AGENT -->|导入文章| PIPE["Threat Pipeline"]
@@ -62,7 +63,7 @@ flowchart TB
 **用户交互与任务执行**分为三个部分：
 
 - **前端工作台**：提供登录、会话切换、消息展示和文件访问入口。
-- **FastAPI 应用**：验证身份、管理会话请求，将文本、工具状态和中断信息转换为前端事件。主 Agent 和同步子 Agent 在该进程中运行。
+- **FastAPI 应用**：验证身份、管理会话请求，将文本、工具状态和中断信息转换为前端事件。新用户消息会先进行一次可降级的 Jev 前置分类；主 Agent 和同步子 Agent 在该进程中运行。
 - **Agent Protocol 服务**：独立执行后台分析。前端通过 FastAPI 查询任务状态并取得结果。
 
 **业务数据的读写由 Java 服务统一承接：**
@@ -123,6 +124,7 @@ flowchart TB
 | Node.js 与 npm | 安装并运行前端。Windows 启动器默认使用 `%ProgramFiles%\nodejs\npm.cmd`。 |
 | PostgreSQL | 提供认证、Agent 持久化和情报业务存储；Python 与 Java 使用同一组 `DB_*` 配置。 |
 | 模型服务 | 提供有效的 DeepSeek 模型配置和密钥，供 Agent 与 Pipeline 调用。 |
+| Jev 服务 | 可选的前置任务分类服务；用于新用户消息的任务类型、处理范围与交付意图判断，服务不可用时不阻断主 Agent。 |
 | OpenSandbox | 提供可访问的管理 API、有效密钥和可用运行镜像；由独立部署负责启动。 |
 | 公共搜索与图表 MCP | 按所需功能配置；搜索不可用时会降级，HTML 关系图生成依赖图表服务。 |
 
@@ -141,6 +143,8 @@ npm --prefix .\frontend install
 | 配置 | 作用 |
 | --- | --- |
 | `DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` | 模型鉴权、服务地址和模型选择。 |
+| `JEVMODEL_API_KEY`、`JEVMODEL_BASE_URL`、`JEVMODEL_MODEL` | Jev 鉴权、服务地址和分类模型选择；默认地址为 `https://jevmodel.org`，默认模型为 `jev-latest`。 |
+| `JEVMODEL_ENABLED`、`JEVMODEL_TIMEOUT_SECONDS` | 是否启用 Jev 分类及单次请求时限；默认启用、时限为 2 秒。缺少密钥时自动跳过。 |
 | `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_SSLMODE` | PostgreSQL 连接。 |
 | `OPEN_SANDBOX_HOST`、`OPEN_SANDBOX_PORT`、`OPEN_SANDBOX_API_KEY`、`OPEN_SANDBOX_IMAGE` | 沙箱服务连接与运行镜像。管理 API 默认地址为 `127.0.0.1:18083`，默认镜像为 `myagent-sandbox:1`。 |
 | `MODELSCOPE_BING_SEARCH_MCP_TOKEN` | 公共搜索 MCP 的连接标识。 |
@@ -274,8 +278,8 @@ flowchart TB
 | **子 Agent** | 注册本地同步 `threat_handle` 与远端异步 `threat_analyst`；框架同时提供默认通用子 Agent。 |
 | **文件后端** | 使用 CompositeBackend，将记忆文件路由到 PostgreSQL，其余文件和命令操作交给用户沙箱。 |
 | **指引与技能** | 加载沙箱中的 `/AGENTS.md` 和 `/skills/main/`，提供固定指引与任务技能。 |
-| **中间件** | 接入用户上下文、技能同步、运行保护、工具可见性和长期记忆更新。 |
-| **持久化与运行上下文** | Store 保存长期数据，Checkpointer 保存会话执行状态，运行上下文传递当前用户身份。 |
+| **中间件** | 接入用户上下文、Jev 分类提示、技能同步、运行保护、工具可见性和长期记忆更新。 |
+| **持久化与运行上下文** | Store 保存长期数据，Checkpointer 保存会话执行状态，运行上下文传递当前用户身份和本轮临时分类。 |
 
 用户首次构图前会准备默认偏好文件。工具发现、子 Agent 配置和后端装配完成后，Agent 图保存在用户分组中，供后续请求复用。
 
@@ -327,7 +331,7 @@ flowchart TD
 
 ### 2.2.3 请求路由与任务委派
 
-每轮执行时，运行上下文将用户身份和偏好文件路径加入模型可见的系统信息。系统提示词要求主 Agent 先读取 `/memories/{user_id}/preferences.md`，再根据**当前请求的任务类型与数据范围**选择执行方式。
+每轮执行时，运行上下文将用户身份和偏好文件路径加入模型可见的系统信息。对于新用户消息，API 还会在进入主图前调用一次 Jev，取得可信时才附加任务类型、范围和交付意图提示。系统提示词要求主 Agent 先读取 `/memories/{user_id}/preferences.md`，再根据**当前请求的任务类型与数据范围**选择执行方式。
 
 **用户偏好用于理解和表达，当前请求决定业务范围与交付形式。** 近期查询或长期偏好不能自动成为本轮任务的筛选条件，也不能自动触发报告或图表生成。
 
@@ -352,6 +356,20 @@ flowchart TD
 用户询问后台进度、全部任务或要求停止任务时，分别使用查询、列举和取消工具。常规后台状态轮询由前端通过 API 完成，结果投递机制在第 10 章展开。
 
 最终回答以工具确认的事实和状态为依据，简洁说明结果与失败项。**文件交付成功后提示使用页面下载入口**，不把内部任务标识、沙箱路径或机器声明作为业务回答展示。
+
+### 2.2.4 Jev 前置任务分类
+
+Jev 用于在主 Agent 执行前提供轻量的路由参考，不承担回答生成、工具调用、业务写入或异步任务提交。API 将**当前用户消息与最多三条近期对话文本**压缩为不超过 8,000 个字符的状态，向 Jev 的 `systemone` 接口一次询问以下字段：
+
+- **任务类型**：文章或来源导入、单篇查询、全库分析、当前结果修改、后台任务管理、技能管理、通用任务、混合任务或无法判断。
+- **处理范围**：单篇文章、指定对象、全部已入库情报、当前会话结果、未明确或不适用。
+- **交付意图**：用户是否在当前请求中明确要求 Markdown 报告，以及是否明确要求 HTML 图表。
+
+分类结果必须通过可信度筛选才会被注入模型上下文：选择题要求被选项概率至少为 `0.85`，且比第二候选高至少 `0.20`；是/否题仅在概率不低于 `0.85` 或不高于 `0.15` 时保留。未通过的字段为空，主 Agent 仍以原始用户请求、系统提示词、工具事实和既有范围规则为准，**分类结果不能扩展范围或自动生成用户未要求的交付件**。
+
+调用时限由 `JEVMODEL_TIMEOUT_SECONDS` 控制，默认 2 秒。缺少密钥、服务不可达、返回非成功状态或返回结构无法解析时，分类器仅记录诊断并返回空结果，随后按原有 Agent 流程继续。该分类只保存在本轮 `ThreatWeaveContext`，不会写入 Checkpointer、用户偏好或长期记忆；`POST /chat/{thread_id}/resume` 恢复暂停图时不重新调用 Jev。
+
+Jev 客户端遵从进程的代理环境。`src/sitecustomize.py` 会在解释器启动时修复本机 `NO_PROXY` 中不被 HTTP 客户端接受的 IPv6 写法，因此分类器不能禁用 `httpx` 的环境配置读取；在通过系统代理访问外部模型服务的部署中，禁用该读取会导致 Jev 请求绕过代理而失败。仓库中的 `jev_minimal_test/run_priority_test.py` 提供独立连通性验证，它只读取根目录 `.env` 的 `JEVMODEL_API_KEY`，发送一个固定的评分请求，并且不会输出或写入密钥。
 
 ## 2.3 同步子 Agent：threat_handle
 
@@ -1496,7 +1514,7 @@ flowchart LR
 
 | 中间件 | 主要介入阶段 | 职责 | 显式接入范围 |
 | --- | --- | --- | --- |
-| **`ContextInjectionMiddleware`** | 每次模型请求。 | 注入当前用户身份与偏好文件路径。 | 主 Agent。 |
+| **`ContextInjectionMiddleware`** | 每次模型请求。 | 注入当前用户身份、偏好文件路径和本轮可信 Jev 分类提示。 | 主 Agent。 |
 | **`SandboxSkillsMiddleware`** | 每次 Agent 运行开始。 | 先同步技能运行文件，再刷新技能索引。 | 主 Agent、异步分析 Agent。 |
 | **`SummarizationMiddleware`** | 模型请求。 | 压缩较早的上下文并保留近期消息。 | 主 Agent、异步分析 Agent。 |
 | **`SummarizationToolMiddleware`** | 模型请求与工具调用。 | 提供主动压缩提示及 `compact_conversation` 工具。 | 主 Agent。 |
@@ -1533,13 +1551,15 @@ flowchart TD
 
 图中展示的是主图完成一次运行的主要阶段。信息补充中断、取消和异常具有各自的退出路径，不保证都进入正常结束钩子；请求与恢复过程在第 10 章说明。异步图只接入自己的技能同步和运行保护，固定指引、用户上下文及长期偏好更新不因共享沙箱而自动继承。
 
-## 6.2 用户上下文注入
+## 6.2 用户上下文与任务分类注入
 
 **用户上下文注入让模型知道当前服务于谁，以及应读取哪份偏好。** `ContextInjectionMiddleware` 从 `runtime.context` 中取得 `user_id` 与 `username`，在每次主模型调用时追加以下信息：
 
 - **用户身份**：当前用户 ID 和展示名称；名称缺失时使用用户 ID。
 - **偏好文件路径**：`/memories/{user_id}/preferences.md`，供 Agent 按用户读取长期偏好。
 - **使用约定**：处理本轮任务前读取偏好，近期查询由系统自动维护。
+
+当本轮 `ThreatWeaveContext` 带有通过置信度筛选的 Jev 结果时，中间件还会追加任务类型、处理范围、Markdown 报告意图和 HTML 图表意图。该文本明确标记为**仅作路由参考**：原始用户请求与项目规则优先；空字段不得补全；范围不充分时仍按原有追问和路由规则处理。分类对象不是会话消息的一部分，因此不会污染历史、长期偏好或恢复状态。Jev 的输入、阈值和失败降级规则见 2.2.4 节。
 
 身份说明加入本次模型请求的系统消息，保留原有系统内容，**不作为额外对话消息写入持久化历史**。同一用户图可以跨会话复用，模型每次调用仍从本次运行上下文取得身份信息。
 
@@ -2186,7 +2206,7 @@ flowchart TD
 - **未提供 `thread_id`**：对话 API 创建新的 UUID，并在执行前建立会话索引。
 - **提供已有 `thread_id`**：先检查该会话是否属于当前用户；不存在或无权访问时返回 404。页面也可以先通过历史接口创建空会话，再提交首条消息，索引生命周期见第 12 章。
 
-API 使用同一身份构造调用配置与 `ThreatWeaveContext`：配置中的 `thread_id` 选择 checkpoint，用户上下文参与记忆和资源归属。随后 `AgentLoader` 取得该用户的 Agent 与沙箱；图的复用和状态隔离分别见 2.2、7.6 节。
+API 使用同一身份构造调用配置与 `ThreatWeaveContext`：配置中的 `thread_id` 选择 checkpoint，用户上下文参与记忆和资源归属。新用户消息在构造上下文前执行可降级的 Jev 前置分类，可信结果仅随当前执行传入；恢复接口不重复分类。随后 `AgentLoader` 取得该用户的 Agent 与沙箱；图的复用和状态隔离分别见 2.2、7.6 节。
 
 **聊天、恢复和结果投递都需要协调对同一会话的写入。** API 在执行前检查会话归属，并在持有会话 guard 后再次检查；具体并发机制沿用 7.6 节，不由客户端按钮状态替代。
 
