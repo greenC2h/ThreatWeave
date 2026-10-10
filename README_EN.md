@@ -4,9 +4,9 @@
 
 # ThreatWeave
 
-**A Harness-oriented multi-agent workspace for public threat intelligence**
+**An automated threat intelligence (CTI) processing system built on a multi-agent architecture**
 
-Turn public articles into traceable threat facts, then explore them through conversation, graphs, and reports.
+Automates the end-to-end workflow from collecting trusted user-specified intelligence sources and extracting entities and relationships to interactive analysis, querying, and knowledge graph visualization.
 
 [中文](README.md) · [English](README_EN.md)
 
@@ -16,7 +16,9 @@ Turn public articles into traceable threat facts, then explore them through conv
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" />
   <img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white" />
   <img alt="Spring Boot" src="https://img.shields.io/badge/Spring%20Boot-3.1-6DB33F?logo=springboot&logoColor=white" />
-  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-Agent%20Orchestration-1C3C3C" />
+  <img alt="DeepAgents 0.7.13" src="https://img.shields.io/badge/DeepAgents-0.7.13-7C3AED" />
+  <img alt="LangGraph 1.2.11" src="https://img.shields.io/badge/LangGraph-1.2.11-1C3C3C" />
+  <img alt="OpenSandbox 0.1.16" src="https://img.shields.io/badge/OpenSandbox-0.1.16-0EA5E9" />
 </p>
 
 ## ✨ Project Overview

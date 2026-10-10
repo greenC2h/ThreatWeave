@@ -4,9 +4,9 @@
 
 # ThreatWeave
 
-**面向公开威胁情报的 Harness 多 Agent 分析工作台**
+**基于多Agent架构的威胁情报（CTI）自动化处理系统**
 
-将公开文章转化为可追溯的威胁事实，并通过对话、图谱和报告支持情报分析。
+实现用户可信情报来源的自动采集、实体关系抽取、交互式分析查询到知识图谱可视化的全流程。
 
 [中文](README.md) · [English](README_EN.md)
 
@@ -16,7 +16,9 @@
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" />
   <img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white" />
   <img alt="Spring Boot" src="https://img.shields.io/badge/Spring%20Boot-3.1-6DB33F?logo=springboot&logoColor=white" />
-  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-Agent%20Orchestration-1C3C3C" />
+  <img alt="DeepAgents 0.7.13" src="https://img.shields.io/badge/DeepAgents-0.7.13-7C3AED" />
+  <img alt="LangGraph 1.2.11" src="https://img.shields.io/badge/LangGraph-1.2.11-1C3C3C" />
+  <img alt="OpenSandbox 0.1.16" src="https://img.shields.io/badge/OpenSandbox-0.1.16-0EA5E9" />
 </p>
 
 ## ✨ 项目介绍
