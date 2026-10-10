@@ -106,17 +106,31 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertNotIn("threat_graph_query", config)
         self.assertNotIn("generate_network_graph_html", config)
 
+    def test_threat_handle_declares_its_skill_discovery_path(self) -> None:
+        """同步子 Agent 必须声明自己的技能目录才能发现已分配技能。"""
+        project_root = Path(__file__).resolve().parents[1]
+        config = (
+            project_root / "src/agent/subagents/configs/threat_handle.yaml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("skills:", config)
+        self.assertIn("/skills/subagents/threat_handle/", config)
+
     def test_threat_analyst_skill_has_valid_metadata_and_sql_guidance(self) -> None:
         skill_path = (
             Path(__file__).resolve().parents[1]
             / "src/agent/skills/subagents/threat_analyst/threat-analysis/SKILL.md"
         )
+        metadata_path = skill_path.with_name("metadata.json")
         text = skill_path.read_text(encoding="utf-8")
         _, front_matter, _ = text.split("---", maxsplit=2)
         metadata = yaml.safe_load(front_matter)
+        index_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
 
         self.assertEqual(metadata["name"], "threat-analysis")
         self.assertIn("Markdown", metadata["description"])
+        self.assertEqual(index_metadata["name"], metadata["name"])
+        self.assertEqual(index_metadata["description"], metadata["description"].strip())
         self.assertIn("describe_read_model", text)
         self.assertIn("execute_read_query", text)
         self.assertIn("get_chart_spec", text)
@@ -125,6 +139,15 @@ class AsyncSubagentConfigurationTests(unittest.TestCase):
         self.assertIn("generate_visualization", text)
         self.assertNotIn("threat_graph_query", text)
         self.assertNotIn("generate_network_graph_html", text)
+
+    def test_threat_handle_skill_directory_is_initialized(self) -> None:
+        """技能管理目标目录必须存在，即使该角色尚未分配技能。"""
+        project_root = Path(__file__).resolve().parents[1]
+        directory = (
+            project_root / "src/agent/skills/subagents/threat_handle"
+        )
+
+        self.assertTrue(directory.is_dir())
 
     def test_compiled_graph_receives_only_read_tools(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

@@ -137,6 +137,7 @@ async def create_main_agent(
     skill_management_tools = create_skill_management_tools(
         SKILLS_ROOT,
         {
+            "threat_handle",
             *(subagent["name"] for subagent in async_subagents),
         },
         sandbox_backend=sandbox_backend,

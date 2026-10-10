@@ -2106,12 +2106,12 @@ flowchart LR
 | --- | --- | --- | --- |
 | **主 Agent** | `/skills/main/`。 | `skill-management`。 | `src/agent/main_agent.py`。 |
 | **默认 `general-purpose`** | 使用所在图传入的技能来源。 | 主图内使用主技能目录。 | DeepAgents 默认装配规则。 |
-| **`threat_handle`** | 当前未声明技能来源。 | 无。 | `threat_handle.yaml`，执行规则在角色提示词中。 |
+| **`threat_handle`** | `/skills/subagents/threat_handle/`。 | 分配给该角色的技能。 | `threat_handle.yaml`，执行规则在角色提示词中。 |
 | **`threat_analyst`** | `/skills/subagents/threat_analyst/`。 | `threat-analysis`。 | `threat_analyst.yaml`，由异步图接入。 |
 
 管理流程中的“分配”是文件归属变更：目标为 `main` 时，将沙箱暂存技能发布到主目录；目标为子 Agent 时，将技能移入该角色目录，**主目录不再保留该技能副本**。已有同名子 Agent 技能不能用分配操作覆盖，版本替换应使用更新工具。
 
-当前管理工具的合法目标来自异步子 Agent 注册表，包含 `threat_analyst`，以及单独允许的 `main`。**`threat_handle` 和 `general-purpose` 当前不是可接受的管理目标**，不能仅根据它们能够执行任务就假定可以分配技能。
+当前管理工具的合法目标包含 `main`、本地同步子 Agent `threat_handle` 和已注册的异步子 Agent `threat_analyst`。**`general-purpose` 不是项目显式管理目标**，不能仅根据框架能够执行该角色就假定可以分配技能。技能分配到子 Agent 后，文件会进入对应的 `/skills/subagents/{subagent}/` 目录，并由该角色配置声明的路径发现。
 
 文件分配和能力接入也需要同时满足：目标角色必须配置对应技能来源，且具备技能要求的工具。注册一个新的异步角色时，需要同步检查其注册信息、YAML 发现路径和工具集合；单独建立目录不会完成接入。
 
@@ -2182,7 +2182,7 @@ flowchart TD
 
 这些规则属于提示词与技能指引，具体参数检查、SQL 只读校验和交付登记由实现层承担。**技能为模型提供执行约束，不能单独保证模型每次都遵循全部规则**；业务服务的能力边界仍以代码为准。
 
-当前 `threat-analysis` 的 `metadata.json` 描述与 `SKILL.md` 不一致。框架仍可从正文文件发现并使用该技能，但管理列表会跳过这个未通过元信息校验的条目，该目录也尚不满足管理发布的一致性要求。运行使用的适用范围和交付约束以当前 `SKILL.md` 为准。
+当前 `threat-analysis` 的 `metadata.json` 与 `SKILL.md` 元信息保持一致，因此既能被运行时技能发现，也能被技能管理列表正常索引。运行使用的适用范围和交付约束以 `SKILL.md` 正文为准。
 
 
 # 10. 端到端请求链路

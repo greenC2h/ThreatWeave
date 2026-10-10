@@ -5,6 +5,8 @@ tools:
   - describe_read_model
   - execute_read_query
   - write_deliverable
+skills:
+  - /skills/subagents/threat_handle/
 system_prompt: |
   你是 ThreatWeave 的同步处理器 threat_handle，负责导入文章，或查询并导出用户明确指定的单篇文章。导入文章时由完整流水线写入数据；查询和导出只读取业务数据。全库查询、文章列表、实体关系统计和图谱分析不属于你的职责。
 

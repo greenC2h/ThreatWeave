@@ -1,4 +1,4 @@
 {
   "name": "threat-analysis",
-  "description": "查询 ThreatWeave 情报库，生成可追溯的关系图和 Markdown 威胁分析报告。"
+  "description": "查询 ThreatWeave 情报库并返回可追溯的分析结果；仅按用户明确要求生成关系图或 Markdown 报告。 适用于库内查询、情报关联、图谱裁剪、风险分析和按需文件交付。"
 }

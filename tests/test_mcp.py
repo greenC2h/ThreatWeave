@@ -1,22 +1,70 @@
-"""验证 ThreatWeave API 失败不会伪装为成功数据，也不会自动重试写操作。"""
+"""MCP 客户端、ThreatWeave 只读工具和 HTTP 错误边界测试。"""
 
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
+from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
+from agent.tools.mcp_client import load_common_tools, load_threatweave_tools
 from mcp_server.http_base import request_threatweave_api
+from mcp_server.tools.threatweave_tools import register_threatweave_tools
+
+
+class McpClientTests(unittest.IsolatedAsyncioTestCase):
+    """验证 MCP 客户端按最小权限加载和规范化工具。"""
+
+    async def test_common_loader_normalizes_bing_search_name(self) -> None:
+        client = MagicMock()
+        client.get_tools = AsyncMock(return_value=[SimpleNamespace(name="bing_search")])
+
+        with patch("agent.tools.mcp_client.MultiServerMCPClient", return_value=client):
+            tools = await load_common_tools({"bing-search": {"url": "https://common.example/mcp"}})
+
+        self.assertEqual([tool.name for tool in tools], ["web_search"])
+        client.get_tools.assert_awaited_once_with(server_name="bing-search")
+
+    async def test_threatweave_loader_selects_requested_tools(self) -> None:
+        common_tools = [SimpleNamespace(name="web_search")]
+        java_tools = [
+            SimpleNamespace(name="describe_read_model"),
+            SimpleNamespace(name="execute_read_query"),
+        ]
+        client = MagicMock()
+        client.get_tools = AsyncMock(return_value=java_tools)
+
+        with (
+            patch("agent.tools.mcp_client.load_common_tools", new=AsyncMock(return_value=common_tools)),
+            patch("agent.tools.mcp_client.MultiServerMCPClient", return_value=client),
+        ):
+            loaded_common, selected = await load_threatweave_tools({"execute_read_query"})
+
+        self.assertEqual(loaded_common, common_tools)
+        self.assertEqual([tool.name for tool in selected], ["execute_read_query"])
+        client.get_tools.assert_has_awaits([call(server_name="threatweave-api")])
+
+
+class ThreatWeaveReadMcpTests(unittest.IsolatedAsyncioTestCase):
+    """验证 ThreatWeave MCP 服务只暴露只读查询工具。"""
+
+    async def test_only_read_model_tools_are_exposed(self) -> None:
+        server = FastMCP(name="read-tools-test")
+        register_threatweave_tools(server)
+        tools = {tool.name: tool for tool in await server.list_tools()}
+
+        self.assertEqual(set(tools), {"describe_read_model", "execute_read_query"})
+        self.assertIn("description", tools["execute_read_query"].parameters["properties"]["sql"])
+        self.assertIn("description", tools["execute_read_query"].parameters["properties"]["parameters"])
 
 
 class ThreatWeaveResponseTests(unittest.IsolatedAsyncioTestCase):
-    """使用隔离 HTTP transport 覆盖业务、协议和网络失败。"""
+    """验证 ThreatWeave API 错误不会伪装成成功数据或泄露响应正文。"""
 
     async def test_empty_success_is_distinct_from_business_failure(self) -> None:
-        """
-        成功的空列表与业务错误必须分别返回数据和抛出工具异常。
-        """
         for code in (200, 400):
             with self.subTest(code=code):
                 transport = httpx.MockTransport(
@@ -30,9 +78,6 @@ class ThreatWeaveResponseTests(unittest.IsolatedAsyncioTestCase):
                             await request_threatweave_api(client, "GET", "/threatweave/graph")
 
     async def test_invalid_response_does_not_leak_body(self) -> None:
-        """
-        HTTP 错误和无效 JSON 不应把原始响应中的敏感内容回传给模型。
-        """
         for status in (200, 503):
             with self.subTest(status=status):
                 transport = httpx.MockTransport(
@@ -44,7 +89,6 @@ class ThreatWeaveResponseTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("private-debug-secret", str(caught.exception))
 
     async def test_business_error_includes_safe_code_and_message(self) -> None:
-        """可公开的业务码和短消息应保留给调用方排障。"""
         transport = httpx.MockTransport(
             lambda request: httpx.Response(200, json={"code": 422, "message": "实体类型不受支持"})
         )
@@ -53,7 +97,6 @@ class ThreatWeaveResponseTests(unittest.IsolatedAsyncioTestCase):
                 await request_threatweave_api(client, "POST", "/threatweave/extractions", json={})
 
     async def test_business_error_does_not_expose_sensitive_message(self) -> None:
-        """业务响应的敏感调试文本仍应退化为通用提示。"""
         transport = httpx.MockTransport(
             lambda request: httpx.Response(200, json={"code": 500, "message": "token=private-debug-secret"})
         )
@@ -64,9 +107,6 @@ class ThreatWeaveResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-debug-secret", str(caught.exception))
 
     async def test_write_timeout_is_not_retried(self) -> None:
-        """
-        超时可能发生在服务端已经写入后，因此调用方只能得到结果未确认的错误。
-        """
         requests = []
 
         def respond(request: httpx.Request) -> httpx.Response:

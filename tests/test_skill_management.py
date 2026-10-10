@@ -98,6 +98,27 @@ class SkillManagementTests(unittest.TestCase):
             self.assertIn("已安装到主 Agent", result)
             self.assertTrue(source_directory.is_dir())
 
+    def test_assignment_and_listing_supports_threat_handle(self) -> None:
+        """技能管理应支持本地同步子 Agent threat_handle。"""
+        subagent_names = {*SUBAGENT_NAMES, "threat_handle"}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_root = Path(temporary_directory)
+            _ensure_skill_directories(skills_root, subagent_names)
+            source_directory = skills_root / "main" / "frontend-design"
+            write_standard_skill(source_directory, "前端设计", "用于构建设计良好的前端页面。")
+
+            _assign_skill(skills_root, "frontend-design", "threat_handle", subagent_names)
+            result = _list_subagent_skills(skills_root, "threat_handle", subagent_names)
+
+            self.assertEqual(
+                result["threat_handle"],
+                [{
+                    "skill_name": "frontend-design",
+                    "name": "前端设计",
+                    "description": "用于构建设计良好的前端页面。",
+                }],
+            )
+
     def test_delete_removes_only_the_selected_subagent_skill(self) -> None:
         """删除已分配技能不会影响其他子 Agent 目录或主 Agent 暂存目录。"""
         with tempfile.TemporaryDirectory() as temporary_directory:
